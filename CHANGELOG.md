@@ -1,3 +1,9 @@
+## Unreleased
+
+FEATURES:
+
+* **New Resource:** `firehydrant_signal_webhook_target` ([#244](https://github.com/firehydrant/terraform-provider-firehydrant/pull/244))
+
 ## 0.15.2
 
 BUG FIXES:

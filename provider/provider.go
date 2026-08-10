@@ -54,6 +54,7 @@ func Provider() *schema.Provider {
 			"firehydrant_status_update_template": resourceStatusUpdateTemplate(),
 			"firehydrant_inbound_email":          resourceInboundEmail(),
 			"firehydrant_custom_event_source":    resourceCustomEventSource(),
+			"firehydrant_signal_webhook_target":  resourceSignalWebhookTarget(),
 		},
 		DataSourcesMap: map[string]*schema.Resource{
 			"firehydrant_environment":       dataSourceEnvironment(),

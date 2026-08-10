@@ -124,7 +124,12 @@ func NewRestClient(token string, opts ...OptFunc) (*APIClient, error) {
 
 	// speakeasy sdk will only work with v1 of the api and adds this to each path automatically.  The server URL then assumes no path information
 	// Thus, we need to strip any trailing 'v1/' from the base URL provided to configure the old client.
-	firehydrantServerURL := strings.TrimSuffix(firehydrantBaseURL, "v1/")
+	//
+	// This reads c.baseURL rather than the environment value it started as, so that
+	// WithBaseURL reaches the SDK client too. Reading the original value meant the
+	// SDK ignored the option and kept talking to whatever the environment pointed
+	// at, which is the default production API when the environment says nothing.
+	firehydrantServerURL := strings.TrimSuffix(c.baseURL, "v1/")
 
 	c.Sdk = fhsdk.New(
 		fhsdk.WithClient(httpClient),
