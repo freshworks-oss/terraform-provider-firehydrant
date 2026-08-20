@@ -1,3 +1,9 @@
+## Unreleased
+
+BUG FIXES:
+
+* `firehydrant_on_call_schedule` refresh no longer panics when the API returns a member without an ID.
+
 ## 0.15.2
 
 BUG FIXES:

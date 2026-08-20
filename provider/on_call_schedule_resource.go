@@ -305,9 +305,11 @@ func readResourceFireHydrantOnCallSchedule(ctx context.Context, d *schema.Resour
 	}
 
 	// Gather values from API response
-	memberIDs := make([]string, len(onCallSchedule.GetMembers()))
-	for i, member := range onCallSchedule.GetMembers() {
-		memberIDs[i] = *member.GetID()
+	memberIDs := make([]string, 0, len(onCallSchedule.GetMembers()))
+	for _, member := range onCallSchedule.GetMembers() {
+		if memberID := member.GetID(); memberID != nil {
+			memberIDs = append(memberIDs, *memberID)
+		}
 	}
 
 	attributes := map[string]interface{}{
