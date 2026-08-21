@@ -3,6 +3,11 @@
 BUG FIXES:
 
 * `firehydrant_on_call_schedule` refresh no longer panics when the API returns a member without an ID.
+* `firehydrant_on_call_schedule` no longer deletes a rotation's entire membership when `member_ids` is
+  not configured. `member_ids` is now `Computed`, and is only sent to the API when it is explicitly
+  declared, so omitting it leaves membership under FireHydrant's control.
+* `firehydrant_on_call_schedule` now emits a warning when a rotation contains gap or unassigned slots,
+  which `member_ids` cannot represent. Use `firehydrant_rotation` to manage those rotations.
 
 ## 0.15.2
 
