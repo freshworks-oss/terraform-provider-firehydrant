@@ -57,10 +57,17 @@ func resourceOnCallSchedule() *schema.Resource {
 					"the default (which inherits the schedule's description). Tracked in state.",
 			},
 			"member_ids": {
-				Type:          schema.TypeList,
-				Elem:          &schema.Schema{Type: schema.TypeString},
-				Optional:      true, // will be required in the future once `members` has been removed.
+				Type:     schema.TypeList,
+				Elem:     &schema.Schema{Type: schema.TypeString},
+				Optional: true, // will be required in the future once `members` has been removed.
+				// Computed so that omitting the attribute means "FireHydrant owns membership"
+				// rather than "membership is empty". An explicitly configured empty list is
+				// still honored -- see memberIDsAreConfigured.
+				Computed:      true,
 				ConflictsWith: []string{"members"},
+				Description: "IDs of the users in the schedule's rotation. Omit to leave membership " +
+					"under FireHydrant's control. Cannot represent gap or unassigned slots -- use the " +
+					"firehydrant_rotation resource for those.",
 			},
 			"members": {
 				Type:     schema.TypeList,
@@ -304,10 +311,30 @@ func readResourceFireHydrantOnCallSchedule(ctx context.Context, d *schema.Resour
 		return diag.Errorf("Error reading on-call schedule %s: %v", id, err)
 	}
 
-	// Gather values from API response
-	memberIDs := make([]string, len(onCallSchedule.GetMembers()))
-	for i, member := range onCallSchedule.GetMembers() {
-		memberIDs[i] = *member.GetID()
+	// Gather values from API response.
+	//
+	// A member with no ID is a gap or unassigned slot in the rotation. Those are
+	// valid FireHydrant state but member_ids cannot represent them, so they are
+	// skipped here and reported as a warning below.
+	var diags diag.Diagnostics
+	memberIDs := make([]string, 0, len(onCallSchedule.GetMembers()))
+	skippedSlots := 0
+	for _, member := range onCallSchedule.GetMembers() {
+		if memberID := member.GetID(); memberID != nil && *memberID != "" {
+			memberIDs = append(memberIDs, *memberID)
+			continue
+		}
+		skippedSlots++
+	}
+	if skippedSlots > 0 {
+		diags = append(diags, diag.Diagnostic{
+			Severity: diag.Warning,
+			Summary:  "On-call schedule has slots that member_ids cannot represent",
+			Detail: fmt.Sprintf(
+				"Schedule %s has %d gap or unassigned slot(s) in its rotation. These are omitted from "+
+					"member_ids, and applying a change to member_ids will delete them. Manage this "+
+					"rotation with the firehydrant_rotation resource to preserve them.", id, skippedSlots),
+		})
 	}
 
 	attributes := map[string]interface{}{
@@ -345,7 +372,32 @@ func readResourceFireHydrantOnCallSchedule(ctx context.Context, d *schema.Resour
 	// Set the on-call schedule's ID in state
 	d.SetId(*onCallSchedule.GetID())
 
-	return diag.Diagnostics{}
+	return diags
+}
+
+// memberIDsAreConfigured reports whether the practitioner actually declared
+// member_ids (or the deprecated members) in configuration. Because neither
+// attribute can be distinguished from an empty list via d.Get, the raw config is
+// consulted directly: a null value means the attribute is absent and FireHydrant
+// owns membership, while an explicitly empty list means "remove all members".
+//
+// This matters because the API replaces the rotation's entire membership list
+// whenever member_ids is present in the request body, including gap and
+// unassigned slots that Terraform never saw.
+func memberIDsAreConfigured(d *schema.ResourceData) bool {
+	rawConfig := d.GetRawConfig()
+	if rawConfig.IsNull() || !rawConfig.IsKnown() {
+		return false
+	}
+
+	for _, attr := range []string{"member_ids", "members"} {
+		v := rawConfig.GetAttr(attr)
+		if !v.IsNull() && v.IsKnown() {
+			return true
+		}
+	}
+
+	return false
 }
 
 func updateResourceFireHydrantOnCallSchedule(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
@@ -427,7 +479,12 @@ func updateResourceFireHydrantOnCallSchedule(ctx context.Context, d *schema.Reso
 			memberIDs = append(memberIDs, v)
 		}
 	}
-	updateRequest.MemberIds = memberIDs
+	// Only send member_ids when the practitioner declared it. Sending an empty
+	// list makes the API replace the rotation's whole membership -- wiping real
+	// users along with any gap or unassigned slots. See issue #243.
+	if memberIDsAreConfigured(d) {
+		updateRequest.MemberIds = memberIDs
+	}
 
 	// Get strategy configuration
 	if v, ok := d.GetOk("strategy"); ok {

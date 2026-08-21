@@ -375,6 +375,10 @@ func offlineOnCallScheduleMockServer() *httptest.Server {
   "description": "Managed by Terraform. Contact @platform-eng for changes.",
   "members": [
     {
+      "id": null,
+      "name": null
+    },
+    {
       "id": "member-1",
       "name": "Frederick Graff"
     }
@@ -410,7 +414,7 @@ func offlineOnCallScheduleMockServer() *httptest.Server {
 	}))
 }
 
-func TestOfflineOnCallScheduleReadMemberID(t *testing.T) {
+func TestOfflineOnCallScheduleReadSkipsNilMemberID(t *testing.T) {
 	ts := offlineOnCallScheduleMockServer()
 	defer ts.Close()
 
