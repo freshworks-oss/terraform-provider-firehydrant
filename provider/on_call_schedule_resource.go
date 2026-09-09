@@ -489,22 +489,7 @@ func updateResourceFireHydrantOnCallSchedule(ctx context.Context, d *schema.Reso
 	// Get strategy configuration
 	if v, ok := d.GetOk("strategy"); ok {
 		if strategies := v.([]interface{}); len(strategies) > 0 {
-			strategy := strategies[0].(map[string]interface{})
-			strategyType := strategy["type"].(string)
-			handoffTime := strategy["handoff_time"].(string)
-			handoffDay := strategy["handoff_day"].(string)
-
-			updateRequest.Strategy = &components.UpdateTeamOnCallScheduleStrategy{
-				Type:        components.UpdateTeamOnCallScheduleType(strategyType),
-				HandoffTime: &handoffTime,
-				HandoffDay:  (*components.UpdateTeamOnCallScheduleHandoffDay)(&handoffDay),
-			}
-
-			// Set shift duration for custom strategy
-			if strategyType == "custom" {
-				shiftDuration := strategy["shift_duration"].(string)
-				updateRequest.Strategy.ShiftDuration = &shiftDuration
-			}
+			updateRequest.Strategy = buildUpdateStrategy(strategies[0].(map[string]interface{}))
 		}
 	}
 
@@ -532,6 +517,35 @@ func updateResourceFireHydrantOnCallSchedule(ctx context.Context, d *schema.Reso
 	}
 
 	return readResourceFireHydrantOnCallSchedule(ctx, d, m)
+}
+
+// buildUpdateStrategy constructs the strategy payload for an on-call schedule update, discarding
+// the fields that don't apply to the strategy type. handoff_day/handoff_time apply only to
+// daily/weekly strategies; shift_duration applies only to custom. Updating a schedule (for
+// example, reordering member_ids) re-sends the whole strategy block, and for a custom rotation the
+// irrelevant handoff_day was rejected by the API with "strategy[handoff_day] does not have a valid
+// value" (FH-3378). This mirrors the discard logic in the create path.
+func buildUpdateStrategy(strategy map[string]interface{}) *components.UpdateTeamOnCallScheduleStrategy {
+	strategyType := strategy["type"].(string)
+	handoffTime := strategy["handoff_time"].(string)
+	handoffDay := strategy["handoff_day"].(string)
+	shiftDuration := strategy["shift_duration"].(string)
+
+	built := &components.UpdateTeamOnCallScheduleStrategy{
+		Type:          components.UpdateTeamOnCallScheduleType(strategyType),
+		HandoffTime:   &handoffTime,
+		HandoffDay:    (*components.UpdateTeamOnCallScheduleHandoffDay)(&handoffDay),
+		ShiftDuration: &shiftDuration,
+	}
+
+	if strategyType == "custom" {
+		built.HandoffTime = nil
+		built.HandoffDay = nil
+	} else {
+		built.ShiftDuration = nil
+	}
+
+	return built
 }
 
 func deleteResourceFireHydrantOnCallSchedule(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {

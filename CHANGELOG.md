@@ -8,6 +8,11 @@ BUG FIXES:
   declared, so omitting it leaves membership under FireHydrant's control.
 * `firehydrant_on_call_schedule` now emits a warning when a rotation contains gap or unassigned slots,
   which `member_ids` cannot represent. Use `firehydrant_rotation` to manage those rotations.
+* `firehydrant_on_call_schedule` no longer sends `handoff_day`/`handoff_time` when updating a
+  `custom` strategy. Updating the schedule (for example, reordering `member_ids`) re-sends the
+  strategy block, and for a custom rotation the irrelevant `handoff_day` was rejected by the API
+  with `strategy[handoff_day] does not have a valid value` (HTTP 400). The update path now discards
+  the fields that don't apply to the strategy type, matching the create path.
 
 ## 0.15.2
 

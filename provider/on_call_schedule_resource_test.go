@@ -532,6 +532,51 @@ func TestOfflineOnCallScheduleCreateDeprecated(t *testing.T) {
 	}
 }
 
+// FH-3378 regression: updating a custom-strategy schedule (e.g. reordering member_ids) re-sends
+// the strategy block. handoff_day/handoff_time do not apply to custom rotations, and the API
+// rejects an irrelevant handoff_day with "strategy[handoff_day] does not have a valid value"
+// (HTTP 400), so the update payload must drop them.
+func TestBuildUpdateStrategy_discardsHandoffForCustomStrategy(t *testing.T) {
+	s := buildUpdateStrategy(map[string]interface{}{
+		"type":           "custom",
+		"shift_duration": "PT168H",
+		// A stale/irrelevant handoff_day/handoff_time that must not reach the API for custom.
+		"handoff_day":  "monday",
+		"handoff_time": "09:00:00",
+	})
+
+	if s.HandoffDay != nil {
+		t.Fatalf("expected HandoffDay to be nil for a custom strategy, got %q", string(*s.HandoffDay))
+	}
+	if s.HandoffTime != nil {
+		t.Fatalf("expected HandoffTime to be nil for a custom strategy, got %q", *s.HandoffTime)
+	}
+	if s.ShiftDuration == nil || *s.ShiftDuration != "PT168H" {
+		t.Fatalf("expected ShiftDuration \"PT168H\" for a custom strategy, got %v", s.ShiftDuration)
+	}
+}
+
+// Guard for the FH-3378 fix: the discard logic must NOT strip handoff_day/handoff_time from a
+// weekly strategy (and must drop the inapplicable shift_duration).
+func TestBuildUpdateStrategy_keepsHandoffForWeeklyStrategy(t *testing.T) {
+	s := buildUpdateStrategy(map[string]interface{}{
+		"type":           "weekly",
+		"shift_duration": "",
+		"handoff_day":    "thursday",
+		"handoff_time":   "10:00:00",
+	})
+
+	if s.HandoffDay == nil || string(*s.HandoffDay) != "thursday" {
+		t.Fatalf("expected HandoffDay \"thursday\" for a weekly strategy, got %v", s.HandoffDay)
+	}
+	if s.HandoffTime == nil || *s.HandoffTime != "10:00:00" {
+		t.Fatalf("expected HandoffTime \"10:00:00\" for a weekly strategy, got %v", s.HandoffTime)
+	}
+	if s.ShiftDuration != nil {
+		t.Fatalf("expected ShiftDuration to be nil for a weekly strategy, got %q", *s.ShiftDuration)
+	}
+}
+
 func TestAccOnCallScheduleResource_updateHandoffAndRestrictions(t *testing.T) {
 	t.Parallel()
 	sharedTeamID := getSharedTeamID(t)
