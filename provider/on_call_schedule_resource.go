@@ -435,16 +435,63 @@ func updateResourceFireHydrantOnCallSchedule(ctx context.Context, d *schema.Reso
 		updateRequest.SlackUserGroupID = &slackUserGroupID
 	}
 
+	// Get member IDs
+	inputMemberIDs := d.Get("member_ids").([]interface{})
+	if len(inputMemberIDs) == 0 {
+		inputMemberIDs = d.Get("members").([]interface{})
+	}
+	memberIDs := []string{}
+	for _, memberID := range inputMemberIDs {
+		if v, ok := memberID.(string); ok && v != "" {
+			memberIDs = append(memberIDs, v)
+		}
+	}
+	// Only send member_ids when the practitioner declared it. Sending an empty
+	// list makes the API replace the rotation's whole membership -- wiping real
+	// users along with any gap or unassigned slots. See issue #243.
+	if memberIDsAreConfigured(d) {
+		updateRequest.MemberIds = memberIDs
+	}
+
+	var diags diag.Diagnostics
+
 	// Handle effective_at - always set it to ensure API gets a valid timestamp
 	if raw := d.GetRawConfig().GetAttr("effective_at"); !raw.IsNull() {
 		effectiveAtStr := raw.AsString()
 		if effectiveAtStr != "" {
 			// Validate the timestamp format
-			_, err := time.Parse(time.RFC3339, effectiveAtStr)
+			effectiveAt, err := time.Parse(time.RFC3339, effectiveAtStr)
 			if err != nil {
 				return diag.FromErr(err)
 			}
-			// Send the timestamp as-is to the API
+			// The API rejects an effective_at that is more than one month old. If
+			// the provider knows the lap length, it adds whole laps so that the
+			// on-call order does not change. If not, it sends the configured value.
+			// See effective_at.go.
+			if loc, strategyType, ok := onCallScheduleLapInputs(d); ok && memberIDsAreConfigured(d) {
+				now := time.Now()
+				if rolled, moved := rollForwardEffectiveAt(effectiveAt, now, loc, strategyType, len(memberIDs)); moved {
+					rolledStr := rolled.Format(time.RFC3339)
+					tflog.Info(ctx, "effective_at is more than one month old. The provider adds whole rotations to it.", map[string]interface{}{
+						"provided_effective_at": effectiveAtStr,
+						"effective_at":          rolledStr,
+					})
+					if rolled.After(now) {
+						diags = append(diags, diag.Diagnostic{
+							Severity: diag.Warning,
+							Summary:  "The on-call schedule update starts at the next rotation boundary",
+							Detail: fmt.Sprintf("effective_at %s is more than one month in the past. The API rejects this value. "+
+								"One rotation is longer than one month, so no rotation boundary is in the window that the API accepts. "+
+								"The next boundary that keeps the configured on-call order is %s. The update takes effect at that time. "+
+								"To apply the update sooner, set a more recent effective_at.",
+								effectiveAtStr, rolledStr),
+							AttributePath: cty.GetAttrPath("effective_at"),
+						})
+					}
+					effectiveAtStr = rolledStr
+				}
+			}
+			// Send the timestamp to the API
 			updateRequest.EffectiveAt = &effectiveAtStr
 			tflog.Debug(ctx, "Schedule update will take effect at: "+effectiveAtStr, map[string]interface{}{
 				"effective_at": effectiveAtStr,
@@ -466,24 +513,6 @@ func updateResourceFireHydrantOnCallSchedule(ctx context.Context, d *schema.Reso
 		tflog.Debug(ctx, "effective_at not provided, using current time for immediate effect", map[string]interface{}{
 			"current_time": effectiveAtStr,
 		})
-	}
-
-	// Get member IDs
-	inputMemberIDs := d.Get("member_ids").([]interface{})
-	if len(inputMemberIDs) == 0 {
-		inputMemberIDs = d.Get("members").([]interface{})
-	}
-	memberIDs := []string{}
-	for _, memberID := range inputMemberIDs {
-		if v, ok := memberID.(string); ok && v != "" {
-			memberIDs = append(memberIDs, v)
-		}
-	}
-	// Only send member_ids when the practitioner declared it. Sending an empty
-	// list makes the API replace the rotation's whole membership -- wiping real
-	// users along with any gap or unassigned slots. See issue #243.
-	if memberIDsAreConfigured(d) {
-		updateRequest.MemberIds = memberIDs
 	}
 
 	// Get strategy configuration
@@ -516,7 +545,7 @@ func updateResourceFireHydrantOnCallSchedule(ctx context.Context, d *schema.Reso
 		return diag.Errorf("Error updating on-call schedule %s: %v", id, err)
 	}
 
-	return readResourceFireHydrantOnCallSchedule(ctx, d, m)
+	return append(diags, readResourceFireHydrantOnCallSchedule(ctx, d, m)...)
 }
 
 // buildUpdateStrategy constructs the strategy payload for an on-call schedule update, discarding

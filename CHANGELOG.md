@@ -13,6 +13,11 @@ BUG FIXES:
   strategy block, and for a custom rotation the irrelevant `handoff_day` was rejected by the API
   with `strategy[handoff_day] does not have a valid value` (HTTP 400). The update path now discards
   the fields that don't apply to the strategy type, matching the create path.
+* `firehydrant_on_call_schedule` updates no longer fail with `effective_at can't be more than 1 month
+  in the past` after the configured `effective_at` becomes one month old. For a `daily` or `weekly`
+  strategy with `member_ids` and no `restrictions`, the update sends an `effective_at` that is a whole
+  number of rotations later. This keeps the on-call order. Before this fix, every update to such a
+  schedule failed. This included the update that reverts a change made in the FireHydrant UI.
 
 ## 0.15.2
 
