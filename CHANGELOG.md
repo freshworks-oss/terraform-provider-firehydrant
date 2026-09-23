@@ -2,6 +2,10 @@
 
 BUG FIXES:
 
+* `firehydrant_severity` and `firehydrant_priority` now accept hyphens in `slug`. The provider's
+  client-side validation rejected slugs such as `P1-CRITICAL` with `must only include letters and
+  numbers`, even though the API accepts and stores them, which blocked importing and managing
+  existing severities and priorities that could not be renamed.
 * `firehydrant_on_call_schedule` refresh no longer panics when the API returns a member without an ID.
 * `firehydrant_on_call_schedule` no longer deletes a rotation's entire membership when `member_ids` is
   not configured. `member_ids` is now `Computed`, and is only sent to the API when it is explicitly

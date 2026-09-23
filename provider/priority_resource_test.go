@@ -99,7 +99,7 @@ func TestAccPriorityResource_validateSchemaAttributesSlug(t *testing.T) {
 			},
 			{
 				Config:      testAccPriorityResourceConfig_slugWithInvalidCharacters(rSlug),
-				ExpectError: regexp.MustCompile(`invalid value for slug \(must only include letters and numbers\)`),
+				ExpectError: regexp.MustCompile(`invalid value for slug \(must only include letters, numbers, and hyphens\)`),
 			},
 		},
 	})
@@ -274,6 +274,6 @@ resource "firehydrant_priority" "test_priority" {
 func testAccPriorityResourceConfig_slugWithInvalidCharacters(rSlug string) string {
 	return fmt.Sprintf(`
 resource "firehydrant_priority" "test_priority" {
-  slug = "INVALID-SLUG%s"
+  slug = "INVALID_SLUG%s"
 }`, rSlug)
 }

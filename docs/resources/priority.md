@@ -22,7 +22,7 @@ resource "firehydrant_priority" "example-priority" {
 The following arguments are supported:
 
 * `slug` - (Required) The slug representing the priority. It must be unique and only contain
-  alphanumeric characters. The slug cannot be longer than 23 characters.
+  alphanumeric characters and hyphens. The slug cannot be longer than 23 characters.
 * `default` - (Optional) Indicates whether the priority should be the default priority for incidents. 
   At most one resource can have default set to `true`. Setting default to `true` for multiple priority 
   resources will result in inconsistent plans in Terraform. Defaults to `false`.

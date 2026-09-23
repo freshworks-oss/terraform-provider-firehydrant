@@ -9,8 +9,10 @@ import (
 
 	"github.com/firehydrant/terraform-provider-firehydrant/firehydrant"
 
+	"github.com/hashicorp/go-cty/cty"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/acctest"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/resource"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
 )
 
@@ -101,7 +103,7 @@ func TestAccSeverityResource_validateSchemaAttributesSlug(t *testing.T) {
 			},
 			{
 				Config:      testAccSeverityResourceConfig_slugWithInvalidCharacters(rSlug),
-				ExpectError: regexp.MustCompile(`invalid value for slug \(must only include letters and numbers\)`),
+				ExpectError: regexp.MustCompile(`invalid value for slug \(must only include letters, numbers, and hyphens\)`),
 			},
 		},
 	})
@@ -279,6 +281,54 @@ resource "firehydrant_severity" "test_severity" {
 func testAccSeverityResourceConfig_slugWithInvalidCharacters(rSlug string) string {
 	return fmt.Sprintf(`
 resource "firehydrant_severity" "test_severity" {
-  slug = "INVALID-SLUG%s"
+  slug = "INVALID_SLUG%s"
 }`, rSlug)
+}
+
+func TestOfflineSeverityAndPrioritySlugValidation(t *testing.T) {
+	t.Parallel()
+
+	slugs := []struct {
+		slug  string
+		valid bool
+	}{
+		{slug: "SEV1", valid: true},
+		{slug: "P1-CRITICAL", valid: true},
+		{slug: "p1-critical", valid: true},
+		{slug: "A-B-C", valid: true},
+		{slug: strings.Repeat("A", 23), valid: true},
+		{slug: "INVALID_SLUG", valid: false},
+		{slug: "INVALID SLUG", valid: false},
+		{slug: "INVALID/SLUG", valid: false},
+		{slug: "INVALID.SLUG", valid: false},
+		{slug: "", valid: false},
+		{slug: strings.Repeat("A", 24), valid: false},
+	}
+
+	resources := []struct {
+		name     string
+		resource *schema.Resource
+	}{
+		{name: "firehydrant_severity", resource: resourceSeverity()},
+		{name: "firehydrant_priority", resource: resourcePriority()},
+	}
+
+	for _, r := range resources {
+		validate := r.resource.Schema["slug"].ValidateDiagFunc
+		if validate == nil {
+			t.Fatalf("%s: slug has no ValidateDiagFunc", r.name)
+		}
+
+		for _, tc := range slugs {
+			t.Run(fmt.Sprintf("%s/%q", r.name, tc.slug), func(t *testing.T) {
+				diags := validate(tc.slug, cty.GetAttrPath("slug"))
+				if tc.valid && diags.HasError() {
+					t.Errorf("expected %q to be accepted, got: %v", tc.slug, diags)
+				}
+				if !tc.valid && !diags.HasError() {
+					t.Errorf("expected %q to be rejected, but it passed validation", tc.slug)
+				}
+			})
+		}
+	}
 }
