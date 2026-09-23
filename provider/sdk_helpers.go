@@ -5,6 +5,35 @@ import (
 	"fmt"
 )
 
+// stringValue dereferences an optional SDK string, returning the empty string when
+// the API omitted the field or returned it as null.
+func stringValue(v *string) string {
+	if v == nil {
+		return ""
+	}
+	return *v
+}
+
+// boolValue dereferences an optional SDK bool, returning false when the API omitted
+// the field or returned it as null.
+func boolValue(v *bool) bool {
+	if v == nil {
+		return false
+	}
+	return *v
+}
+
+// stringsToList converts an SDK string slice into the []interface{} a Terraform
+// TypeList expects. The result is always non-nil so an absent list and an empty
+// list produce the same state, avoiding a spurious diff.
+func stringsToList(in []string) []interface{} {
+	out := make([]interface{}, 0, len(in))
+	for _, v := range in {
+		out = append(out, v)
+	}
+	return out
+}
+
 // unmarshalLabels takes an SDK labels map (map[string]any and converts it
 // into a map[string]string for Terraform compatibility.
 // We need to convert any non-string values to strings since Terraform's TypeMap expects strings.

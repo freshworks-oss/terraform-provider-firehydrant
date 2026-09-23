@@ -2,6 +2,13 @@
 
 BUG FIXES:
 
+* `firehydrant_incident_type` no longer crashes the provider when reading an incident type whose
+  template is missing. Incident types created before templates gained their current fields come
+  back from the API without the `template` object, or without individual fields inside it, and the
+  provider dereferenced those values unconditionally. The panic surfaced to practitioners as
+  "Plugin did not respond", and affected `terraform plan`, `refresh` and `apply` as well as
+  `import`. Missing template attributes now read as empty, with a warning. The
+  `firehydrant_incident_type` data source had the same defect and is fixed too.
 * `firehydrant_severity` and `firehydrant_priority` now accept hyphens in `slug`. The provider's
   client-side validation rejected slugs such as `P1-CRITICAL` with `must only include letters and
   numbers`, even though the API accepts and stores them, which blocked importing and managing
