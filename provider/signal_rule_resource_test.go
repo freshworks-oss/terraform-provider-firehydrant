@@ -3,13 +3,19 @@ package provider
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"regexp"
 	"strings"
 	"testing"
 
+	fhsdk "github.com/firehydrant/firehydrant-go-sdk"
+	"github.com/firehydrant/firehydrant-go-sdk/models/components"
+	"github.com/firehydrant/terraform-provider-firehydrant/firehydrant"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/acctest"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/resource"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
 )
 
@@ -370,5 +376,133 @@ func testAccCheckFireHydrantSignalRuleDestroy() resource.TestCheckFunc {
 		}
 
 		return nil
+	}
+}
+
+// Unit tests: import ID parsing and the read-path nil guards. These run
+// offline (no FIREHYDRANT_API_KEY) since signal rules are scoped to a team,
+// so a plain resource ID is not enough to import or refresh one.
+
+func TestResourceFireHydrantSignalRuleParseId(t *testing.T) {
+	tests := []struct {
+		name       string
+		id         string
+		wantTeamID string
+		wantID     string
+		wantErr    bool
+	}{
+		{name: "valid", id: "team-1:rule-1", wantTeamID: "team-1", wantID: "rule-1"},
+		{name: "id contains a colon", id: "team-1:rule:1", wantTeamID: "team-1", wantID: "rule:1"},
+		{name: "missing separator", id: "rule-1", wantErr: true},
+		{name: "empty team", id: ":rule-1", wantErr: true},
+		{name: "empty rule id", id: "team-1:", wantErr: true},
+		{name: "empty string", id: "", wantErr: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			teamID, id, err := resourceFireHydrantSignalRuleParseId(tc.id)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected an error parsing %q, got teamID=%q id=%q", tc.id, teamID, id)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error parsing %q: %v", tc.id, err)
+			}
+			if teamID != tc.wantTeamID || id != tc.wantID {
+				t.Fatalf("parsing %q: expected teamID=%q id=%q, got teamID=%q id=%q", tc.id, tc.wantTeamID, tc.wantID, teamID, id)
+			}
+		})
+	}
+}
+
+func offlineSignalRuleMockServer(payload string) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if req.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(payload))
+	}))
+}
+
+func offlineSignalRuleClient(ts *httptest.Server) *firehydrant.APIClient {
+	client := &firehydrant.APIClient{}
+	client.Sdk = fhsdk.New(
+		fhsdk.WithServerURL(ts.URL),
+		fhsdk.WithSecurity(components.Security{
+			APIKey: "test-token-very-authorized",
+		}),
+	)
+	return client
+}
+
+func TestOfflineSignalRuleImportSetsTeamID(t *testing.T) {
+	ts := offlineSignalRuleMockServer(`{"id":"rule-1","name":"Route to team","expression":"true","target":{"type":"Team","id":"team-1"}}`)
+	defer ts.Close()
+
+	r := schema.TestResourceDataRaw(t, resourceSignalRule().Schema, map[string]interface{}{})
+	r.SetId("team-1:rule-1")
+
+	results, err := importResourceFireHydrantSignalRule(context.Background(), r, offlineSignalRuleClient(ts))
+	if err != nil {
+		t.Fatalf("unexpected error importing signal rule: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+
+	imported := results[0]
+	if imported.Id() != "rule-1" {
+		t.Errorf("expected id rule-1, got %q", imported.Id())
+	}
+	if got := imported.Get("team_id").(string); got != "team-1" {
+		t.Errorf("expected team_id team-1, got %q", got)
+	}
+}
+
+// Regression test: reading a signal rule whose API response omits the
+// target object, or fields within it, used to panic on
+// signalRule.GetTarget().GetType() before the nil check below it ever ran.
+func TestOfflineSignalRuleReadHandlesMissingTarget(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload string
+	}{
+		{name: "target omitted", payload: `{"id":"rule-1","name":"Legacy rule","expression":"true"}`},
+		{name: "target is null", payload: `{"id":"rule-1","name":"Legacy rule","expression":"true","target":null}`},
+		{name: "target present but empty", payload: `{"id":"rule-1","name":"Legacy rule","expression":"true","target":{}}`},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ts := offlineSignalRuleMockServer(tc.payload)
+			defer ts.Close()
+
+			r := schema.TestResourceDataRaw(t, resourceSignalRule().Schema, map[string]interface{}{
+				"team_id": "team-1",
+			})
+			r.SetId("rule-1")
+
+			// Panicked before the fix.
+			diags := readResourceFireHydrantSignalRule(context.Background(), r, offlineSignalRuleClient(ts))
+			if diags.HasError() {
+				t.Fatalf("unexpected error reading signal rule: %v", diags)
+			}
+
+			if got := r.Get("name").(string); got != "Legacy rule" {
+				t.Errorf("expected name %q, got %q", "Legacy rule", got)
+			}
+			if got := r.Get("target_type").(string); got != "" {
+				t.Errorf("expected empty target_type, got %q", got)
+			}
+			if got := r.Get("target_id").(string); got != "" {
+				t.Errorf("expected empty target_id, got %q", got)
+			}
+		})
 	}
 }

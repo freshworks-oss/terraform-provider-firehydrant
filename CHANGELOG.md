@@ -2,6 +2,11 @@
 
 BUG FIXES:
 
+* `firehydrant_escalation_policy` and `firehydrant_signal_rule` can now be imported. Both resources
+  are scoped to a team, and import previously always failed with a 404 because the bare resource ID
+  passed to `terraform import` gave the read path no team to scope the lookup to. Import now expects
+  `<Team_ID>:<Resource_ID>`. Their read paths also no longer panic when the API omits optional
+  fields such as a step target's type, a policy's description, or a signal rule's target.
 * `firehydrant_incident_type` no longer crashes the provider when reading an incident type whose
   template is missing. Incident types created before templates gained their current fields come
   back from the API without the `template` object, or without individual fields inside it, and the
