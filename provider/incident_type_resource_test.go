@@ -3,10 +3,17 @@ package provider
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
+	fhsdk "github.com/firehydrant/firehydrant-go-sdk"
+	"github.com/firehydrant/firehydrant-go-sdk/models/components"
+	"github.com/firehydrant/terraform-provider-firehydrant/firehydrant"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/acctest"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/resource"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
 )
 
@@ -314,4 +321,201 @@ resource "firehydrant_incident_type" "test_incident_type" {
 		}
 	}
 }`, rName, rName, rName, rName, rName, rName, rName)
+}
+
+// Regression tests: incident types created before templates gained their current
+// fields come back with the template object, or fields within it, missing. The
+// provider used to dereference those pointers unconditionally and panicked, which
+// surfaced to practitioners as "Plugin did not respond".
+
+func offlineIncidentTypeMockServer(payload string) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if req.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(payload))
+	}))
+}
+
+func offlineIncidentTypeClient(ts *httptest.Server) *firehydrant.APIClient {
+	client := &firehydrant.APIClient{}
+	client.Sdk = fhsdk.New(
+		fhsdk.WithServerURL(ts.URL),
+		fhsdk.WithSecurity(components.Security{
+			APIKey: "test-token-very-authorized",
+		}),
+	)
+	return client
+}
+
+func TestOfflineIncidentTypeReadHandlesMissingTemplateFields(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload string
+	}{
+		{
+			name:    "template omitted entirely",
+			payload: `{"id":"it-1","name":"Legacy","description":"An old incident type"}`,
+		},
+		{
+			name:    "template present but empty",
+			payload: `{"id":"it-1","name":"Legacy","description":"An old incident type","template":{}}`,
+		},
+		{
+			name:    "template partially populated",
+			payload: `{"id":"it-1","name":"Legacy","description":"An old incident type","template":{"description":"only this one"}}`,
+		},
+		{
+			name: "template fields explicitly null",
+			payload: `{"id":"it-1","name":"Legacy","description":"An old incident type","template":{` +
+				`"description":null,"customer_impact_summary":null,"severity":null,"priority":null,` +
+				`"private_incident":null,"tag_list":null,"runbook_ids":null,"team_ids":null,"impacts":null}}`,
+		},
+		{
+			name:    "top-level name and description omitted",
+			payload: `{"id":"it-1","template":{}}`,
+		},
+		{
+			name:    "template is null",
+			payload: `{"id":"it-1","name":"Legacy","description":"An old incident type","template":null}`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ts := offlineIncidentTypeMockServer(tc.payload)
+			defer ts.Close()
+
+			r := schema.TestResourceDataRaw(t, resourceIncidentType().Schema, map[string]interface{}{})
+			r.SetId("it-1")
+
+			// Panicked before the fix.
+			diags := readResourceIncidentType(context.Background(), r, offlineIncidentTypeClient(ts))
+			if diags.HasError() {
+				t.Fatalf("unexpected error reading incident type: %v", diags)
+			}
+
+			if r.Id() != "it-1" {
+				t.Errorf("expected id it-1, got %q", r.Id())
+			}
+			if got := r.Get("template.#").(int); got != 1 {
+				t.Errorf("expected exactly 1 template block, got %d", got)
+			}
+			for _, listAttr := range []string{"template.0.tags", "template.0.runbook_ids", "template.0.team_ids", "template.0.impacts"} {
+				if r.Get(listAttr) == nil {
+					t.Errorf("expected %s to be an empty list, got nil", listAttr)
+				}
+			}
+		})
+	}
+}
+
+func TestOfflineIncidentTypeReadWarnsOnMissingTemplate(t *testing.T) {
+	ts := offlineIncidentTypeMockServer(`{"id":"it-1","name":"Legacy","description":"An old incident type"}`)
+	defer ts.Close()
+
+	r := schema.TestResourceDataRaw(t, resourceIncidentType().Schema, map[string]interface{}{})
+	r.SetId("it-1")
+
+	diags := readResourceIncidentType(context.Background(), r, offlineIncidentTypeClient(ts))
+	if diags.HasError() {
+		t.Fatalf("unexpected error reading incident type: %v", diags)
+	}
+	if len(diags) != 1 || diags[0].Severity != diag.Warning {
+		t.Fatalf("expected exactly one warning about the missing template, got %v", diags)
+	}
+}
+
+func TestOfflineIncidentTypeReadSkipsIncompleteImpacts(t *testing.T) {
+	ts := offlineIncidentTypeMockServer(`{"id":"it-1","name":"Legacy","description":"d","template":{"impacts":[` +
+		`{"id":null,"condition_id":null},` +
+		`{"id":"impact-1","condition_id":"condition-1"},` +
+		`{"id":"impact-2","condition_id":null}]}}`)
+	defer ts.Close()
+
+	r := schema.TestResourceDataRaw(t, resourceIncidentType().Schema, map[string]interface{}{})
+	r.SetId("it-1")
+
+	diags := readResourceIncidentType(context.Background(), r, offlineIncidentTypeClient(ts))
+	if diags.HasError() {
+		t.Fatalf("unexpected error reading incident type: %v", diags)
+	}
+
+	if got := r.Get("template.0.impacts.#").(int); got != 1 {
+		t.Fatalf("expected 1 complete impact to survive, got %d", got)
+	}
+	if got := r.Get("template.0.impacts.0.impact_id").(string); got != "impact-1" {
+		t.Errorf("expected impact_id impact-1, got %q", got)
+	}
+	if got := r.Get("template.0.impacts.0.condition_id").(string); got != "condition-1" {
+		t.Errorf("expected condition_id condition-1, got %q", got)
+	}
+	if len(diags) != 1 || diags[0].Severity != diag.Warning {
+		t.Fatalf("expected exactly one warning about incomplete impacts, got %v", diags)
+	}
+}
+
+// Baseline: a fully-populated payload must still map every field correctly, so the
+// nil guards cannot silently swallow real values.
+func TestOfflineIncidentTypeReadFullyPopulated(t *testing.T) {
+	ts := offlineIncidentTypeMockServer(`{"id":"it-1","name":"Outage","description":"top desc","template":{` +
+		`"description":"tmpl desc","customer_impact_summary":"cis","severity":"SEV1","priority":"P1-CRITICAL",` +
+		`"private_incident":true,"tag_list":["tag-a","tag-b"],"runbook_ids":["rb-1"],"team_ids":["team-1","team-2"],` +
+		`"impacts":[{"id":"impact-1","condition_id":"condition-1"}]}}`)
+	defer ts.Close()
+
+	r := schema.TestResourceDataRaw(t, resourceIncidentType().Schema, map[string]interface{}{})
+	r.SetId("it-1")
+
+	diags := readResourceIncidentType(context.Background(), r, offlineIncidentTypeClient(ts))
+	if diags.HasError() {
+		t.Fatalf("unexpected error reading incident type: %v", diags)
+	}
+	if len(diags) != 0 {
+		t.Errorf("expected no diagnostics for a complete payload, got %v", diags)
+	}
+
+	for attr, want := range map[string]interface{}{
+		"name":                               "Outage",
+		"description":                        "top desc",
+		"template.0.description":             "tmpl desc",
+		"template.0.customer_impact_summary": "cis",
+		"template.0.severity_slug":           "SEV1",
+		"template.0.priority_slug":           "P1-CRITICAL",
+		"template.0.private_incident":        true,
+		"template.0.tags.#":                  2,
+		"template.0.tags.0":                  "tag-a",
+		"template.0.runbook_ids.0":           "rb-1",
+		"template.0.team_ids.#":              2,
+		"template.0.team_ids.1":              "team-2",
+		"template.0.impacts.0.impact_id":     "impact-1",
+	} {
+		if got := r.Get(attr); got != want {
+			t.Errorf("%s: expected %v (%T), got %v (%T)", attr, want, want, got, got)
+		}
+	}
+}
+
+func TestOfflineIncidentTypeDataSourceHandlesMissingTemplate(t *testing.T) {
+	ts := offlineIncidentTypeMockServer(`{"id":"it-1","name":"Legacy","description":"An old incident type"}`)
+	defer ts.Close()
+
+	r := schema.TestResourceDataRaw(t, dataSourceIncidentType().Schema, map[string]interface{}{
+		"id": "it-1",
+	})
+
+	// Panicked before the fix.
+	diags := readDataIncidentType(context.Background(), r, offlineIncidentTypeClient(ts))
+	if diags.HasError() {
+		t.Fatalf("unexpected error reading incident type data source: %v", diags)
+	}
+	if r.Id() != "it-1" {
+		t.Errorf("expected id it-1, got %q", r.Id())
+	}
+	if got := r.Get("template.#").(int); got != 1 {
+		t.Errorf("expected exactly 1 template block, got %d", got)
+	}
 }

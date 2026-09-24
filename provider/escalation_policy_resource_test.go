@@ -3,12 +3,18 @@ package provider
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	fhsdk "github.com/firehydrant/firehydrant-go-sdk"
+	"github.com/firehydrant/firehydrant-go-sdk/models/components"
+	"github.com/firehydrant/terraform-provider-firehydrant/firehydrant"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/acctest"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/resource"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
 )
 
@@ -290,5 +296,122 @@ func testAccCheckEscalationPolicyResourceDestroy() resource.TestCheckFunc {
 		}
 
 		return nil
+	}
+}
+
+// Unit tests: import ID parsing and the read-path nil guards. These run
+// offline (no FIREHYDRANT_API_KEY) since escalation policies are scoped to a
+// team, so a plain resource ID is not enough to import or refresh one.
+
+func TestResourceFireHydrantEscalationPolicyParseId(t *testing.T) {
+	tests := []struct {
+		name       string
+		id         string
+		wantTeamID string
+		wantID     string
+		wantErr    bool
+	}{
+		{name: "valid", id: "team-1:policy-1", wantTeamID: "team-1", wantID: "policy-1"},
+		{name: "id contains a colon", id: "team-1:policy:1", wantTeamID: "team-1", wantID: "policy:1"},
+		{name: "missing separator", id: "policy-1", wantErr: true},
+		{name: "empty team", id: ":policy-1", wantErr: true},
+		{name: "empty policy id", id: "team-1:", wantErr: true},
+		{name: "empty string", id: "", wantErr: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			teamID, id, err := resourceFireHydrantEscalationPolicyParseId(tc.id)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected an error parsing %q, got teamID=%q id=%q", tc.id, teamID, id)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error parsing %q: %v", tc.id, err)
+			}
+			if teamID != tc.wantTeamID || id != tc.wantID {
+				t.Fatalf("parsing %q: expected teamID=%q id=%q, got teamID=%q id=%q", tc.id, tc.wantTeamID, tc.wantID, teamID, id)
+			}
+		})
+	}
+}
+
+func offlineEscalationPolicyMockServer(payload string) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if req.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(payload))
+	}))
+}
+
+func offlineEscalationPolicyClient(ts *httptest.Server) *firehydrant.APIClient {
+	client := &firehydrant.APIClient{}
+	client.Sdk = fhsdk.New(
+		fhsdk.WithServerURL(ts.URL),
+		fhsdk.WithSecurity(components.Security{
+			APIKey: "test-token-very-authorized",
+		}),
+	)
+	return client
+}
+
+func TestOfflineEscalationPolicyImportSetsTeamID(t *testing.T) {
+	ts := offlineEscalationPolicyMockServer(`{"id":"policy-1","name":"Primary","default":true,"repetitions":1,"steps":[]}`)
+	defer ts.Close()
+
+	r := schema.TestResourceDataRaw(t, resourceEscalationPolicy().Schema, map[string]interface{}{})
+	r.SetId("team-1:policy-1")
+
+	results, err := importResourceFireHydrantEscalationPolicy(context.Background(), r, offlineEscalationPolicyClient(ts))
+	if err != nil {
+		t.Fatalf("unexpected error importing escalation policy: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+
+	imported := results[0]
+	if imported.Id() != "policy-1" {
+		t.Errorf("expected id policy-1, got %q", imported.Id())
+	}
+	if got := imported.Get("team_id").(string); got != "team-1" {
+		t.Errorf("expected team_id team-1, got %q", got)
+	}
+}
+
+// Regression test: reading an escalation policy whose API response omits
+// optional pointer fields (description, step_strategy, step targets) used to
+// panic. Every field the provider previously dereferenced unconditionally is
+// exercised here as absent.
+func TestOfflineEscalationPolicyReadHandlesMissingFields(t *testing.T) {
+	ts := offlineEscalationPolicyMockServer(`{"id":"policy-1","name":"Primary","steps":[{"timeout":"PT5M","targets":[{}]}]}`)
+	defer ts.Close()
+
+	r := schema.TestResourceDataRaw(t, resourceEscalationPolicy().Schema, map[string]interface{}{
+		"team_id": "team-1",
+	})
+	r.SetId("policy-1")
+
+	// Panicked before the fix: default, repetitions, and step target type/id
+	// were all dereferenced without a nil check.
+	diags := readResourceFireHydrantEscalationPolicy(context.Background(), r, offlineEscalationPolicyClient(ts))
+	if diags.HasError() {
+		t.Fatalf("unexpected error reading escalation policy: %v", diags)
+	}
+
+	if got := r.Get("name").(string); got != "Primary" {
+		t.Errorf("expected name Primary, got %q", got)
+	}
+	if got := r.Get("description").(string); got != "" {
+		t.Errorf("expected empty description, got %q", got)
+	}
+	if got := r.Get("step.0.targets.0.type").(string); got != "" {
+		t.Errorf("expected empty target type, got %q", got)
 	}
 }

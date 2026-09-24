@@ -58,3 +58,11 @@ In addition to all arguments above, the following attributes are exported:
 * `target_name` - The name of the target resource.
 * `target_team_id` - The team ID associated with the target (for escalation policies and teams).
 * `target_is_pageable` - Whether the target is pageable.
+
+## Import
+
+Signal rules can be imported; use `<TeamID>:<SignalRuleID>` as the import ID. For example:
+
+```shell
+terraform import firehydrant_signal_rule.datadog_source 3638b647-b99c-5051-b715-eda2c912c42e:12345678-90ab-cdef-1234-567890abcdef
+```

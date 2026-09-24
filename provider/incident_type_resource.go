@@ -172,7 +172,11 @@ func createResourceIncidentType(ctx context.Context, d *schema.ResourceData, m i
 		return diag.Errorf("Error creating new Incident Type: %v", err)
 	}
 
-	d.SetId(*response.ID)
+	responseID := response.GetID()
+	if responseID == nil || *responseID == "" {
+		return diag.Errorf("Error creating new Incident Type: the API returned an incident type with no ID")
+	}
+	d.SetId(*responseID)
 
 	return readResourceIncidentType(ctx, d, m)
 }
@@ -190,50 +194,15 @@ func readResourceIncidentType(ctx context.Context, d *schema.ResourceData, m int
 		return diag.FromErr(err)
 	}
 
-	template := map[string]interface{}{
-		"description":             *response.Template.Description,
-		"customer_impact_summary": *response.Template.CustomerImpactSummary,
-		"severity_slug":           *response.Template.Severity,
-		"priority_slug":           *response.Template.Priority,
-		"private_incident":        *response.Template.PrivateIncident,
-	}
-
 	// labels is in the sdk as an empty struct, which seems... wrong.  I'm going to implement the rest of this without it
 	// (because I can only hold so much complexity in my head), and then investigate this from the API side to see if
 	// this is being generated correctly.
 
-	var tags []interface{}
-	for _, tag := range response.Template.TagList {
-		tags = append(tags, tag)
-	}
-	template["tags"] = tags
-
-	var runbookIDs []interface{}
-	for _, r := range response.Template.RunbookIds {
-		runbookIDs = append(runbookIDs, r)
-	}
-	template["runbook_ids"] = runbookIDs
-
-	var teamIDs []interface{}
-	for _, team := range response.Template.TeamIds {
-		teamIDs = append(teamIDs, team)
-	}
-	template["team_ids"] = teamIDs
-
-	var impacts []map[string]interface{}
-	for _, im := range response.Template.Impacts {
-		impacts = append(impacts, map[string]interface{}{
-			"impact_id":    im.ID,
-			"condition_id": im.ConditionID,
-		})
-	}
-	template["impacts"] = impacts
-
-	templateSlice := []map[string]interface{}{template}
+	templateSlice, diags := incidentTypeTemplateToState(id, response.GetTemplate())
 
 	attributes := map[string]interface{}{
-		"name":        *response.Name,
-		"description": *response.Description,
+		"name":        stringValue(response.GetName()),
+		"description": stringValue(response.GetDescription()),
 		"template":    templateSlice,
 	}
 
@@ -243,9 +212,74 @@ func readResourceIncidentType(ctx context.Context, d *schema.ResourceData, m int
 		}
 	}
 
-	d.SetId(*response.ID)
+	responseID := response.GetID()
+	if responseID == nil || *responseID == "" {
+		return diag.Errorf("Error reading incident type %s: the API returned an incident type with no ID", id)
+	}
+	d.SetId(*responseID)
 
-	return diag.Diagnostics{}
+	return diags
+}
+
+// incidentTypeTemplateToState flattens an incident type's template into the shape
+// Terraform expects.
+//
+// Incident types created before templates gained their current fields come back
+// with the template object, or individual fields within it, missing. Every value is
+// therefore read through the SDK's nil-safe accessors rather than dereferenced, and
+// an absent template yields a template of zero values plus a warning, because the
+// schema requires the block to be present.
+func incidentTypeTemplateToState(id string, template *components.NullableIncidentTypeEntityTemplateEntity) ([]map[string]interface{}, diag.Diagnostics) {
+	var diags diag.Diagnostics
+
+	if template == nil {
+		diags = append(diags, diag.Diagnostic{
+			Severity: diag.Warning,
+			Summary:  "Incident type has no template",
+			Detail: fmt.Sprintf(
+				"FireHydrant returned incident type %s without a template, so every template "+
+					"attribute is read as empty. This is expected for incident types that predate "+
+					"incident type templates.", id),
+		})
+	}
+
+	// An impact missing either ID cannot be expressed in the schema, where both are
+	// required, so it is skipped rather than written as an empty string.
+	impacts := make([]map[string]interface{}, 0, len(template.GetImpacts()))
+	skippedImpacts := 0
+	for _, impact := range template.GetImpacts() {
+		impactID, conditionID := impact.GetID(), impact.GetConditionID()
+		if impactID == nil || *impactID == "" || conditionID == nil || *conditionID == "" {
+			skippedImpacts++
+			continue
+		}
+		impacts = append(impacts, map[string]interface{}{
+			"impact_id":    *impactID,
+			"condition_id": *conditionID,
+		})
+	}
+	if skippedImpacts > 0 {
+		diags = append(diags, diag.Diagnostic{
+			Severity: diag.Warning,
+			Summary:  "Incident type has incomplete impacts",
+			Detail: fmt.Sprintf(
+				"Incident type %s has %d impact(s) missing an impact ID or condition ID. They are "+
+					"omitted from state, and applying a change to the template will drop them.",
+				id, skippedImpacts),
+		})
+	}
+
+	return []map[string]interface{}{{
+		"description":             stringValue(template.GetDescription()),
+		"customer_impact_summary": stringValue(template.GetCustomerImpactSummary()),
+		"severity_slug":           stringValue(template.GetSeverity()),
+		"priority_slug":           stringValue(template.GetPriority()),
+		"private_incident":        boolValue(template.GetPrivateIncident()),
+		"tags":                    stringsToList(template.GetTagList()),
+		"runbook_ids":             stringsToList(template.GetRunbookIds()),
+		"team_ids":                stringsToList(template.GetTeamIds()),
+		"impacts":                 impacts,
+	}}, diags
 }
 
 func updateResourceIncidentType(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {

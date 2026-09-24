@@ -2,6 +2,22 @@
 
 BUG FIXES:
 
+* `firehydrant_escalation_policy` and `firehydrant_signal_rule` can now be imported. Both resources
+  are scoped to a team, and import previously always failed with a 404 because the bare resource ID
+  passed to `terraform import` gave the read path no team to scope the lookup to. Import now expects
+  `<Team_ID>:<Resource_ID>`. Their read paths also no longer panic when the API omits optional
+  fields such as a step target's type, a policy's description, or a signal rule's target.
+* `firehydrant_incident_type` no longer crashes the provider when reading an incident type whose
+  template is missing. Incident types created before templates gained their current fields come
+  back from the API without the `template` object, or without individual fields inside it, and the
+  provider dereferenced those values unconditionally. The panic surfaced to practitioners as
+  "Plugin did not respond", and affected `terraform plan`, `refresh` and `apply` as well as
+  `import`. Missing template attributes now read as empty, with a warning. The
+  `firehydrant_incident_type` data source had the same defect and is fixed too.
+* `firehydrant_severity` and `firehydrant_priority` now accept hyphens in `slug`. The provider's
+  client-side validation rejected slugs such as `P1-CRITICAL` with `must only include letters and
+  numbers`, even though the API accepts and stores them, which blocked importing and managing
+  existing severities and priorities that could not be renamed.
 * `firehydrant_on_call_schedule` refresh no longer panics when the API returns a member without an ID.
 * `firehydrant_on_call_schedule` no longer deletes a rotation's entire membership when `member_ids` is
   not configured. `member_ids` is now `Computed`, and is only sent to the API when it is explicitly

@@ -41,7 +41,7 @@ func resourcePriority() *schema.Resource {
 				ValidateDiagFunc: validation.ToDiagFunc(
 					validation.All(
 						validation.StringLenBetween(0, 23),
-						validation.StringMatch(regexp.MustCompile(`\A[[:alnum:]]+\z`), "must only include letters and numbers"),
+						validation.StringMatch(regexp.MustCompile(`\A[[:alnum:]-]+\z`), "must only include letters, numbers, and hyphens"),
 					),
 				),
 			},

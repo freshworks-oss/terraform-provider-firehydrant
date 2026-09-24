@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/davecgh/go-spew/spew"
 	"github.com/firehydrant/firehydrant-go-sdk/models/components"
@@ -21,7 +22,7 @@ func resourceEscalationPolicy() *schema.Resource {
 		ReadContext:   readResourceFireHydrantEscalationPolicy,
 		DeleteContext: deleteResourceFireHydrantEscalationPolicy,
 		Importer: &schema.ResourceImporter{
-			StateContext: schema.ImportStatePassthroughContext,
+			StateContext: importResourceFireHydrantEscalationPolicy,
 		},
 
 		Schema: map[string]*schema.Schema{
@@ -173,10 +174,12 @@ func readResourceFireHydrantEscalationPolicy(ctx context.Context, d *schema.Reso
 	}
 
 	// Update the resource data
-	d.Set("name", *escalationPolicy.GetName())
-	d.Set("description", *escalationPolicy.GetDescription())
-	d.Set("default", *escalationPolicy.GetDefault())
-	d.Set("repetitions", *escalationPolicy.GetRepetitions())
+	d.Set("name", stringValue(escalationPolicy.GetName()))
+	d.Set("description", stringValue(escalationPolicy.GetDescription()))
+	d.Set("default", boolValue(escalationPolicy.GetDefault()))
+	if repetitions := escalationPolicy.GetRepetitions(); repetitions != nil {
+		d.Set("repetitions", *repetitions)
+	}
 
 	// Set step strategy
 	if stepStrategy := escalationPolicy.GetStepStrategy(); stepStrategy != nil {
@@ -191,7 +194,7 @@ func readResourceFireHydrantEscalationPolicy(ctx context.Context, d *schema.Reso
 		})
 		for _, policy := range priorityPolicies {
 			policyMap := map[string]interface{}{
-				"priority": *policy.GetNotificationPriority(),
+				"priority": stringValue(policy.GetNotificationPriority()),
 			}
 
 			// Set repetitions if available
@@ -203,8 +206,8 @@ func readResourceFireHydrantEscalationPolicy(ctx context.Context, d *schema.Reso
 			if handoffStep := policy.GetHandoffStep(); handoffStep != nil {
 				if target := handoffStep.GetTarget(); target != nil {
 					handoffStepMap := map[string]interface{}{
-						"target_type": *target.GetType(),
-						"target_id":   *target.GetID(),
+						"target_type": stringValue(target.GetType()),
+						"target_id":   stringValue(target.GetID()),
 					}
 					policyMap["handoff_step"] = []map[string]interface{}{handoffStepMap}
 				}
@@ -227,15 +230,15 @@ func readResourceFireHydrantEscalationPolicy(ctx context.Context, d *schema.Reso
 		targets := []map[string]interface{}{}
 		for _, target := range step.GetTargets() {
 			targetMap := map[string]interface{}{
-				"type": *target.GetType(),
-				"id":   *target.GetID(),
+				"type": stringValue(target.GetType()),
+				"id":   stringValue(target.GetID()),
 			}
 
 			targets = append(targets, targetMap)
 		}
 
 		stepMap := map[string]interface{}{
-			"timeout": *step.GetTimeout(),
+			"timeout": stringValue(step.GetTimeout()),
 			"targets": targets,
 		}
 
@@ -252,8 +255,8 @@ func readResourceFireHydrantEscalationPolicy(ctx context.Context, d *schema.Reso
 	if handoffStep := escalationPolicy.GetHandoffStep(); handoffStep != nil {
 		if target := handoffStep.GetTarget(); target != nil {
 			handoffStepMap := map[string]interface{}{
-				"target_type": *target.GetType(),
-				"target_id":   *target.GetID(),
+				"target_type": stringValue(target.GetType()),
+				"target_id":   stringValue(target.GetID()),
 			}
 
 			d.Set("handoff_step", []map[string]interface{}{handoffStepMap})
@@ -261,6 +264,31 @@ func readResourceFireHydrantEscalationPolicy(ctx context.Context, d *schema.Reso
 	}
 
 	return diag.Diagnostics{}
+}
+
+// importResourceFireHydrantEscalationPolicy imports an escalation policy given an ID
+// of the form Team_ID:Escalation_Policy_ID, since escalation policies are scoped to a
+// team and a bare policy ID is not enough to look one up.
+func importResourceFireHydrantEscalationPolicy(ctx context.Context, d *schema.ResourceData, m interface{}) ([]*schema.ResourceData, error) {
+	teamID, id, err := resourceFireHydrantEscalationPolicyParseId(d.Id())
+	if err != nil {
+		return nil, err
+	}
+
+	d.Set("team_id", teamID)
+	d.SetId(id)
+
+	return []*schema.ResourceData{d}, nil
+}
+
+func resourceFireHydrantEscalationPolicyParseId(id string) (string, string, error) {
+	parts := strings.SplitN(id, ":", 2)
+
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", fmt.Errorf("unexpected format of ID (%s), expected Team_ID:Escalation_Policy_ID", id)
+	}
+
+	return parts[0], parts[1], nil
 }
 
 // creates an escalation policy for a team using the firehydrant api client

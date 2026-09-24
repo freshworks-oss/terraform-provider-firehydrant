@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/firehydrant/firehydrant-go-sdk/models/components"
 	"github.com/firehydrant/terraform-provider-firehydrant/firehydrant"
@@ -21,7 +22,7 @@ func resourceSignalRule() *schema.Resource {
 		ReadContext:   readResourceFireHydrantSignalRule,
 		DeleteContext: deleteResourceFireHydrantSignalRule,
 		Importer: &schema.ResourceImporter{
-			StateContext: schema.ImportStatePassthroughContext,
+			StateContext: importResourceFireHydrantSignalRule,
 		},
 		Schema: map[string]*schema.Schema{
 			// Required
@@ -120,15 +121,16 @@ func readResourceFireHydrantSignalRule(ctx context.Context, d *schema.ResourceDa
 	})
 
 	// Gather values from API response
+	target := signalRule.GetTarget()
 	attributes := map[string]interface{}{
-		"name":        *signalRule.GetName(),
-		"expression":  *signalRule.GetExpression(),
-		"target_type": *signalRule.GetTarget().GetType(),
-		"target_id":   *signalRule.GetTarget().GetID(),
+		"name":        stringValue(signalRule.GetName()),
+		"expression":  stringValue(signalRule.GetExpression()),
+		"target_type": stringValue(target.GetType()),
+		"target_id":   stringValue(target.GetID()),
 	}
 
 	// Handle target additional fields
-	if target := signalRule.GetTarget(); target != nil {
+	if target != nil {
 		if target.GetName() != nil {
 			attributes["target_name"] = *target.GetName()
 		}
@@ -172,6 +174,31 @@ func readResourceFireHydrantSignalRule(ctx context.Context, d *schema.ResourceDa
 	}
 
 	return diag.Diagnostics{}
+}
+
+// importResourceFireHydrantSignalRule imports a signal rule given an ID of the form
+// Team_ID:Signal_Rule_ID, since signal rules are scoped to a team and a bare rule ID
+// is not enough to look one up.
+func importResourceFireHydrantSignalRule(ctx context.Context, d *schema.ResourceData, m interface{}) ([]*schema.ResourceData, error) {
+	teamID, id, err := resourceFireHydrantSignalRuleParseId(d.Id())
+	if err != nil {
+		return nil, err
+	}
+
+	d.Set("team_id", teamID)
+	d.SetId(id)
+
+	return []*schema.ResourceData{d}, nil
+}
+
+func resourceFireHydrantSignalRuleParseId(id string) (string, string, error) {
+	parts := strings.SplitN(id, ":", 2)
+
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", fmt.Errorf("unexpected format of ID (%s), expected Team_ID:Signal_Rule_ID", id)
+	}
+
+	return parts[0], parts[1], nil
 }
 
 func createResourceFireHydrantSignalRule(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
