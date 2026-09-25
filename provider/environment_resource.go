@@ -114,7 +114,7 @@ func updateResourceFireHydrantEnvironment(ctx context.Context, d *schema.Resourc
 	description := d.Get("description").(string)
 
 	updateRequest := components.UpdateEnvironment{
-		Name:        name,
+		Name:        &name,
 		Description: &description,
 	}
 
