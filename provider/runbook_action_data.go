@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/firehydrant/firehydrant-go-sdk/models/components"
 	"github.com/firehydrant/terraform-provider-firehydrant/firehydrant"
 
 	"github.com/hashicorp/terraform-plugin-log/tflog"
@@ -46,7 +47,7 @@ func dataSourceRunbookAction() *schema.Resource {
 
 func dataFireHydrantRunbookAction(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
 	// Get the API client
-	firehydrantAPIClient := m.(firehydrant.Client)
+	client := m.(*firehydrant.APIClient)
 
 	// Get the runbook action
 	runbookType := d.Get("type").(string)
@@ -57,19 +58,34 @@ func dataFireHydrantRunbookAction(ctx context.Context, d *schema.ResourceData, m
 		"slug":             actionSlug,
 		"integration_slug": integrationSlug,
 	})
-	runbookActionResponse, err := firehydrantAPIClient.RunbookActions().Get(ctx, runbookType, integrationSlug, actionSlug)
+
+	// these values were hardcoded into the REST client, so we'll continue to use them here
+	perPage := 100
+	isLite := true
+	listResponse, err := client.Sdk.Runbooks.ListRunbookActions(ctx, nil, &perPage, &runbookType, &isLite)
 	if err != nil {
+		return diag.Errorf("Error getting runbook actions list: %v", err)
+	}
+
+	var requestedAction *components.RunbooksActionsEntity
+	for _, action := range listResponse.Data {
+		if *action.Slug == actionSlug && *action.Integration.Slug == integrationSlug {
+			requestedAction = &action
+		}
+	}
+
+	if requestedAction == nil {
 		return diag.Errorf("Error reading runbook action %s:%s: %v", integrationSlug, actionSlug, err)
 	}
 
 	// Update the attributes in state to the values we got from the API
 	attributes := map[string]string{
-		"name": runbookActionResponse.Name,
-		"slug": runbookActionResponse.Slug,
+		"name": *requestedAction.Name,
+		"slug": *requestedAction.Slug,
 	}
 
-	if runbookActionResponse.Integration != nil {
-		attributes["integration_slug"] = runbookActionResponse.Integration.Slug
+	if requestedAction.Integration != nil {
+		attributes["integration_slug"] = *requestedAction.Integration.Slug
 	}
 
 	for key, value := range attributes {
@@ -79,7 +95,7 @@ func dataFireHydrantRunbookAction(ctx context.Context, d *schema.ResourceData, m
 	}
 
 	// Set the runbook action's ID in state
-	d.SetId(runbookActionResponse.ID)
+	d.SetId(*requestedAction.ID)
 
 	return diag.Diagnostics{}
 }

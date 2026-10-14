@@ -30,8 +30,8 @@ github.com/emirpasic/gods v1.12.0 h1:QAUIPSaCu4G+POclxeqb3F+WPpdKqFGlw36+yOzGlrg
 github.com/emirpasic/gods v1.12.0/go.mod h1:YfzfFFoVP/catgzJb4IKIqXjX78Ha8FMSDh3ymbK86o=
 github.com/fatih/color v1.13.0 h1:8LOYc1KYPPmyKMuN8QV2DNRWNbLo6LZ0iLs8+mlH53w=
 github.com/fatih/color v1.13.0/go.mod h1:kLAiJbzzSOZDVNGyDpeOxJ47H46qBXwg5ILebYFFOfk=
-github.com/firehydrant/firehydrant-go-sdk v1.7.1 h1:Zg3DiVi/rXdOhrsh6SbSYxxNzWyBirJlql+ma5lK1ws=
-github.com/firehydrant/firehydrant-go-sdk v1.7.1/go.mod h1:t1kMbRzhA0F2ULLTfv2lNg1RS5JIKbMpXsT9nwq5a2Q=
+github.com/firehydrant/firehydrant-go-sdk v1.8.4 h1:ivadOG4RITBhHX8lm0qMhdNhn+8ELNLthka9+JI0v3c=
+github.com/firehydrant/firehydrant-go-sdk v1.8.4/go.mod h1:t1kMbRzhA0F2ULLTfv2lNg1RS5JIKbMpXsT9nwq5a2Q=
 github.com/flynn/go-shlex v0.0.0-20150515145356-3f9db97f8568/go.mod h1:xEzjJPgXI435gkrCt3MPfRiAkVrwSbHsst4LCFVfpJc=
 github.com/gliderlabs/ssh v0.2.2/go.mod h1:U7qILu1NlMHj9FlMhZLlkCdDnU1DBEAqr0aevW3Awn0=
 github.com/go-git/gcfg v1.5.0 h1:Q5ViNfGF8zFgyJWPqYwA7qGFoMTEiBmdlkcfRmpIMa4=

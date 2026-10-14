@@ -2,7 +2,6 @@ package provider
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/firehydrant/terraform-provider-firehydrant/firehydrant"
@@ -47,31 +46,31 @@ func dataSourceRunbook() *schema.Resource {
 
 func dataFireHydrantRunbook(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
 	// Get the API client
-	firehydrantAPIClient := m.(firehydrant.Client)
+	client := m.(*firehydrant.APIClient)
 
 	// Get the runbook
 	runbookID := d.Get("id").(string)
 	tflog.Debug(ctx, fmt.Sprintf("Read runbook: %s", runbookID), map[string]interface{}{
 		"id": runbookID,
 	})
-	runbookResponse, err := firehydrantAPIClient.Runbooks().Get(ctx, runbookID)
+	response, err := client.Sdk.Runbooks.GetRunbook(ctx, runbookID)
 	if err != nil {
 		return diag.Errorf("Error reading runbook %s: %v", runbookID, err)
 	}
 
 	// Gather values from API response
 	attributes := map[string]interface{}{
-		"description": runbookResponse.Description,
-		"name":        runbookResponse.Name,
+		"description": *response.Description,
+		"name":        *response.Name,
 	}
 
-	if runbookResponse.Owner != nil {
-		attributes["owner_id"] = runbookResponse.Owner.ID
+	if response.Owner != nil {
+		attributes["owner_id"] = *response.Owner.ID
 	}
 
 	var attachmentRule []byte
-	if len(runbookResponse.AttachmentRule) > 0 {
-		attachmentRule, err = json.Marshal(runbookResponse.AttachmentRule)
+	if response.AttachmentRule != nil {
+		attachmentRule, err = response.AttachmentRule.MarshalJSON()
 		if err != nil {
 			return diag.Errorf("Error converting attachment_rule to JSON due invalid JSON returned by FireHydrant: %v", err)
 		}
@@ -87,7 +86,7 @@ func dataFireHydrantRunbook(ctx context.Context, d *schema.ResourceData, m inter
 	}
 
 	// Set the runbook's ID in state
-	d.SetId(runbookResponse.ID)
+	d.SetId(*response.ID)
 
 	return diag.Diagnostics{}
 }
