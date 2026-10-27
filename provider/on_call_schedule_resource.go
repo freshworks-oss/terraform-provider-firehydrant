@@ -66,8 +66,10 @@ func resourceOnCallSchedule() *schema.Resource {
 				Computed:      true,
 				ConflictsWith: []string{"members"},
 				Description: "IDs of the users in the schedule's rotation. Omit to leave membership " +
-					"under FireHydrant's control. Cannot represent gap or unassigned slots -- use the " +
-					"firehydrant_rotation resource for those.",
+					"under FireHydrant's control. Gap or unassigned slots, such as those left by a " +
+					"deactivated user, appear as empty strings so they show as drift; remove them by " +
+					"applying member_ids without them, or use the firehydrant_rotation resource to " +
+					"keep intentional gaps.",
 			},
 			"members": {
 				Type:     schema.TypeList,
@@ -313,27 +315,32 @@ func readResourceFireHydrantOnCallSchedule(ctx context.Context, d *schema.Resour
 
 	// Gather values from API response.
 	//
-	// A member with no ID is a gap or unassigned slot in the rotation. Those are
-	// valid FireHydrant state but member_ids cannot represent them, so they are
-	// skipped here and reported as a warning below.
+	// A member with no ID is a gap or unassigned slot in the rotation, for
+	// example the slot left behind when a user is deactivated. They are kept in
+	// member_ids as "" so they surface as drift against the configuration: if
+	// they were dropped here, removing the deactivated user from member_ids
+	// would produce no diff and the unclaimed shifts would never be cleared.
+	// Create and Update filter "" out before calling the API.
 	var diags diag.Diagnostics
 	memberIDs := make([]string, 0, len(onCallSchedule.GetMembers()))
-	skippedSlots := 0
+	unassignedSlots := 0
 	for _, member := range onCallSchedule.GetMembers() {
 		if memberID := member.GetID(); memberID != nil && *memberID != "" {
 			memberIDs = append(memberIDs, *memberID)
 			continue
 		}
-		skippedSlots++
+		memberIDs = append(memberIDs, "")
+		unassignedSlots++
 	}
-	if skippedSlots > 0 {
+	if unassignedSlots > 0 {
 		diags = append(diags, diag.Diagnostic{
 			Severity: diag.Warning,
-			Summary:  "On-call schedule has slots that member_ids cannot represent",
+			Summary:  "On-call schedule has unassigned slots",
 			Detail: fmt.Sprintf(
-				"Schedule %s has %d gap or unassigned slot(s) in its rotation. These are omitted from "+
-					"member_ids, and applying a change to member_ids will delete them. Manage this "+
-					"rotation with the firehydrant_rotation resource to preserve them.", id, skippedSlots),
+				"Schedule %s has %d gap or unassigned slot(s) in its rotation, for example from a "+
+					"deactivated user. They appear as empty strings in member_ids so that they show as "+
+					"drift, and applying member_ids without them will delete them. Manage this rotation "+
+					"with the firehydrant_rotation resource to preserve intentional gaps.", id, unassignedSlots),
 		})
 	}
 

@@ -22,8 +22,12 @@ BUG FIXES:
 * `firehydrant_on_call_schedule` no longer deletes a rotation's entire membership when `member_ids` is
   not configured. `member_ids` is now `Computed`, and is only sent to the API when it is explicitly
   declared, so omitting it leaves membership under FireHydrant's control.
-* `firehydrant_on_call_schedule` now emits a warning when a rotation contains gap or unassigned slots,
-  which `member_ids` cannot represent. Use `firehydrant_rotation` to manage those rotations.
+* `firehydrant_on_call_schedule` now reports gap or unassigned slots in a rotation as empty strings in
+  `member_ids`, with a warning, instead of silently dropping them. When a user is deactivated,
+  FireHydrant leaves an unassigned slot in their rotations and the schedule shows unclaimed shifts.
+  Because the slot was dropped on refresh, removing the deactivated user from `member_ids` produced no
+  diff and the slot was never cleared. It now shows as drift, so the next apply removes it. Use
+  `firehydrant_rotation` to manage rotations with intentional gaps.
 * `firehydrant_on_call_schedule` no longer sends `handoff_day`/`handoff_time` when updating a
   `custom` strategy. Updating the schedule (for example, reordering `member_ids`) re-sends the
   strategy block, and for a custom rotation the irrelevant `handoff_day` was rejected by the API

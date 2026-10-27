@@ -91,7 +91,7 @@ The following arguments are supported:
 * `name` - (Required) The name of the on-call schedule.
 * `description` - (Optional) A description for the on-call schedule.
 * `team_id` - (Required) The ID of the team that the on-call schedule belongs to.
-* `member_ids` - (Required) A list of user IDs that are on-call for the on-call schedule.
+* `member_ids` - (Required) A list of user IDs that are on-call for the on-call schedule. When a user is deactivated, FireHydrant leaves an unassigned slot in their rotations; it appears as an empty string (`""`) in state so it shows as drift. Remove the deactivated user from `member_ids` and apply to clear the slot. Use the `firehydrant_rotation` resource to keep intentional gaps.
 * `members` - (Deprecated) use `member_ids` instead.
 * `time_zone` - (Required) The time zone that the on-call schedule is in.
 * `slack_user_group_id` - (Optional) The ID of the Slack user group that the on-call schedule is associated with.
