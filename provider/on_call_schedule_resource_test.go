@@ -14,6 +14,7 @@ import (
 	fhsdk "github.com/firehydrant/firehydrant-go-sdk"
 	"github.com/firehydrant/firehydrant-go-sdk/models/components"
 	"github.com/freshworks-oss/terraform-provider-firehydrant/firehydrant"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/acctest"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/resource"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
@@ -362,6 +363,17 @@ func testAccCheckOnCallScheduleResourceDestroy() resource.TestCheckFunc {
 }
 
 func offlineOnCallScheduleMockServer() *httptest.Server {
+	return offlineOnCallScheduleMockServerWithGetMembers(`[
+    {
+      "id": "member-1",
+      "name": "Frederick Graff"
+    }
+  ]`)
+}
+
+// offlineOnCallScheduleMockServerWithGetMembers serves the schedule with the
+// given JSON array as the members returned from GET.
+func offlineOnCallScheduleMockServerWithGetMembers(membersJSON string) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 
@@ -373,16 +385,7 @@ func offlineOnCallScheduleMockServer() *httptest.Server {
   "id": "schedule-id",
   "name": "A pleasant on-call schedule",
   "description": "Managed by Terraform. Contact @platform-eng for changes.",
-  "members": [
-    {
-      "id": null,
-      "name": null
-    },
-    {
-      "id": "member-1",
-      "name": "Frederick Graff"
-    }
-  ],
+  "members": ` + membersJSON + `,
   "team": {
     "id": "team-1",
     "name": "Philadelphia"
@@ -414,8 +417,17 @@ func offlineOnCallScheduleMockServer() *httptest.Server {
 	}))
 }
 
-func TestOfflineOnCallScheduleReadSkipsNilMemberID(t *testing.T) {
-	ts := offlineOnCallScheduleMockServer()
+func TestOfflineOnCallScheduleReadKeepsUnassignedSlotAsEmptyMemberID(t *testing.T) {
+	ts := offlineOnCallScheduleMockServerWithGetMembers(`[
+    {
+      "id": null,
+      "name": null
+    },
+    {
+      "id": "member-1",
+      "name": "Frederick Graff"
+    }
+  ]`)
 	defer ts.Close()
 
 	client := &firehydrant.APIClient{}
@@ -439,17 +451,86 @@ func TestOfflineOnCallScheduleReadSkipsNilMemberID(t *testing.T) {
 		t.Fatalf("error reading on-call schedule: %v", d)
 	}
 
+	// The mock returns an unassigned slot followed by member-1. The slot must
+	// stay in state as "" so it surfaces as drift (FH-6435).
 	memberIDs := r.Get("member_ids").([]interface{})
-	if len(memberIDs) != 1 {
-		t.Fatalf("expected 1 member ID, got %d", len(memberIDs))
+	if len(memberIDs) != 2 {
+		t.Fatalf("expected 2 member IDs (unassigned slot and member-1), got %d: %v", len(memberIDs), memberIDs)
+	}
+	if memberIDs[0] != "" {
+		t.Fatalf("expected the unassigned slot to be kept as an empty string, got %v", memberIDs[0])
+	}
+	if memberIDs[1] != "member-1" {
+		t.Fatalf("expected second member ID to be member-1, got %v", memberIDs[1])
 	}
 
-	memberID, ok := memberIDs[0].(string)
-	if !ok {
-		t.Fatalf("expected member ID to be a string, got %T: %v", memberIDs[0], memberIDs[0])
+	if len(d) != 1 || d[0].Severity != diag.Warning {
+		t.Fatalf("expected a single warning about unassigned slots, got %v", d)
 	}
-	if memberID != "member-1" {
-		t.Fatalf("expected member ID to be member-1, got %s", memberIDs[0].(string))
+}
+
+// Regression test for FH-6435: when a user is deactivated, FireHydrant leaves an
+// unassigned slot in the rotation. Removing that user from member_ids must show
+// up as a diff, otherwise Terraform never sends the update that clears the slot.
+func TestOfflineOnCallScheduleUnassignedSlotSurfacesAsDrift(t *testing.T) {
+	ts := offlineOnCallScheduleMockServerWithGetMembers(`[
+    {
+      "id": null,
+      "name": null
+    },
+    {
+      "id": "member-1",
+      "name": "Frederick Graff"
+    }
+  ]`)
+	defer ts.Close()
+
+	client := &firehydrant.APIClient{}
+	client.Sdk = fhsdk.New(
+		fhsdk.WithServerURL(ts.URL),
+		fhsdk.WithSecurity(components.Security{
+			APIKey: "test-token-very-authorized",
+		}),
+	)
+
+	r := schema.TestResourceDataRaw(t, resourceOnCallSchedule().Schema, map[string]interface{}{
+		"team_id":     "team-1",
+		"name":        "test-on-call-schedule",
+		"description": "test-description",
+		"time_zone":   "America/New_York",
+		"member_ids":  []interface{}{"member-1"},
+	})
+	r.SetId("schedule-id")
+
+	if d := readResourceFireHydrantOnCallSchedule(context.Background(), r, client); d.HasError() {
+		t.Fatalf("error reading on-call schedule: %v", d)
+	}
+
+	// Configuration after the practitioner removes the deactivated user.
+	config := terraform.NewResourceConfigRaw(map[string]interface{}{
+		"team_id":     "team-1",
+		"name":        "test-on-call-schedule",
+		"description": "test-description",
+		"time_zone":   "America/New_York",
+		"member_ids":  []interface{}{"member-1"},
+	})
+
+	diff, err := resourceOnCallSchedule().Diff(context.Background(), r.State(), config, client)
+	if err != nil {
+		t.Fatalf("error computing diff: %v", err)
+	}
+	if diff == nil {
+		t.Fatal("expected a diff for member_ids when the schedule has an unassigned slot, got none")
+	}
+	hasMemberIDsDiff := false
+	for key := range diff.Attributes {
+		if strings.HasPrefix(key, "member_ids.") {
+			hasMemberIDsDiff = true
+			break
+		}
+	}
+	if !hasMemberIDsDiff {
+		t.Fatalf("expected a member_ids diff when the schedule has an unassigned slot, got: %v", diff.Attributes)
 	}
 }
 
