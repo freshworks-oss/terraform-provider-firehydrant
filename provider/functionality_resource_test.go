@@ -2,13 +2,177 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"reflect"
 	"testing"
 
+	fhsdk "github.com/firehydrant/firehydrant-go-sdk"
+	"github.com/firehydrant/terraform-provider-firehydrant/firehydrant"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/acctest"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/resource"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
 )
+
+func TestFunctionalityResourceCreatePayload(t *testing.T) {
+	t.Parallel()
+
+	var payload map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/functionalities":
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Errorf("decode create payload: %v", err)
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			w.WriteHeader(http.StatusCreated)
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/functionalities/functionality-id":
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			http.Error(w, "unexpected request", http.StatusNotFound)
+			return
+		}
+
+		_, _ = w.Write([]byte(`{
+  "id": "functionality-id",
+  "name": "checkout",
+  "description": "Customer checkout",
+  "labels": {"lifecycle": "production"},
+  "service_tier": 1,
+  "alert_on_add": true,
+  "auto_add_responding_team": true,
+  "services": [{"id": "service-id"}],
+  "environments": [{"id": "environment-id"}],
+  "links": [{"href_url": "https://example.com/dashboard", "icon_url": "https://example.com/icon.png", "name": "Dashboard"}],
+  "external_resources": [{"remote_id": "remote-id", "connection_type": "github"}],
+  "owner": {"id": "owner-id"},
+  "teams": [{"id": "team-id"}]
+}`))
+	}))
+	defer server.Close()
+
+	functionality := resourceFunctionality()
+	data := schema.TestResourceDataRaw(t, functionality.Schema, map[string]interface{}{
+		"name":                     "checkout",
+		"description":              "Customer checkout",
+		"alert_on_add":             true,
+		"auto_add_responding_team": true,
+		"environment_ids":          []interface{}{"environment-id"},
+		"external_resources": []interface{}{map[string]interface{}{
+			"connection_type": "github",
+			"remote_id":       "remote-id",
+		}},
+		"labels": map[string]interface{}{"lifecycle": "production"},
+		"links": []interface{}{map[string]interface{}{
+			"href_url": "https://example.com/dashboard",
+			"icon_url": "https://example.com/icon.png",
+			"name":     "Dashboard",
+		}},
+		"owner_id":     "owner-id",
+		"service_ids":  []interface{}{"service-id"},
+		"service_tier": 1,
+		"team_ids":     []interface{}{"team-id"},
+	})
+	client := &firehydrant.APIClient{
+		Sdk: fhsdk.New(fhsdk.WithServerURL(server.URL)),
+	}
+
+	if diagnostics := createResourceFireHydrantFunctionality(context.Background(), data, client); diagnostics.HasError() {
+		t.Fatalf("create functionality returned diagnostics: %v", diagnostics)
+	}
+
+	expectedPayload := map[string]interface{}{
+		"name":                     "checkout",
+		"description":              "Customer checkout",
+		"alert_on_add":             true,
+		"auto_add_responding_team": true,
+		"environments": []interface{}{map[string]interface{}{
+			"id": "environment-id",
+		}},
+		"external_resources": []interface{}{map[string]interface{}{
+			"connection_type": "github",
+			"remote_id":       "remote-id",
+		}},
+		"labels": map[string]interface{}{"lifecycle": "production"},
+		"links": []interface{}{map[string]interface{}{
+			"href_url": "https://example.com/dashboard",
+			"icon_url": "https://example.com/icon.png",
+			"name":     "Dashboard",
+		}},
+		"owner": map[string]interface{}{"id": "owner-id"},
+		"services": []interface{}{map[string]interface{}{
+			"id": "service-id",
+		}},
+		"service_tier": float64(1),
+		"teams": []interface{}{map[string]interface{}{
+			"id": "team-id",
+		}},
+	}
+	if !reflect.DeepEqual(payload, expectedPayload) {
+		t.Errorf("create payload = %#v, want %#v", payload, expectedPayload)
+	}
+}
+
+func TestFunctionalityResourceUpdateClearsCollections(t *testing.T) {
+	t.Parallel()
+
+	var payload map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		switch {
+		case r.Method == http.MethodPatch && r.URL.Path == "/v1/functionalities/functionality-id":
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Errorf("decode update payload: %v", err)
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+		case r.Method != http.MethodGet || r.URL.Path != "/v1/functionalities/functionality-id":
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			http.Error(w, "unexpected request", http.StatusNotFound)
+			return
+		}
+
+		_, _ = w.Write([]byte(`{"id":"functionality-id","name":"checkout","service_tier":5}`))
+	}))
+	defer server.Close()
+
+	functionality := resourceFunctionality()
+	data := schema.TestResourceDataRaw(t, functionality.Schema, map[string]interface{}{
+		"name": "checkout",
+	})
+	data.SetId("functionality-id")
+	client := &firehydrant.APIClient{
+		Sdk: fhsdk.New(fhsdk.WithServerURL(server.URL)),
+	}
+
+	if diagnostics := updateResourceFireHydrantFunctionality(context.Background(), data, client); diagnostics.HasError() {
+		t.Fatalf("update functionality returned diagnostics: %v", diagnostics)
+	}
+
+	for _, field := range []string{"environments", "external_resources", "links", "services", "teams"} {
+		if value, ok := payload[field]; !ok || !reflect.DeepEqual(value, []interface{}{}) {
+			t.Errorf("update payload %q = %#v, want an empty array", field, value)
+		}
+	}
+	for _, field := range []string{
+		"remove_remaining_environments",
+		"remove_remaining_external_resources",
+		"remove_remaining_services",
+		"remove_remaining_teams",
+	} {
+		if value, ok := payload[field]; !ok || value != true {
+			t.Errorf("update payload %q = %#v, want true", field, value)
+		}
+	}
+}
 
 func TestAccFunctionalityResource_basic(t *testing.T) {
 	t.Parallel()
@@ -31,6 +195,62 @@ func TestAccFunctionalityResource_basic(t *testing.T) {
 			},
 		},
 	})
+}
+
+func TestFunctionalityResourceSchema(t *testing.T) {
+	t.Parallel()
+
+	functionality := resourceFunctionality()
+	if err := functionality.InternalValidate(nil, true); err != nil {
+		t.Fatalf("functionality resource schema is invalid: %v", err)
+	}
+
+	expectedFields := []string{
+		"alert_on_add",
+		"auto_add_responding_team",
+		"description",
+		"environment_ids",
+		"external_resources",
+		"labels",
+		"links",
+		"name",
+		"owner_id",
+		"service_ids",
+		"service_tier",
+		"team_ids",
+	}
+	for _, field := range expectedFields {
+		if _, ok := functionality.Schema[field]; !ok {
+			t.Errorf("functionality resource schema does not contain %q", field)
+		}
+	}
+
+	serviceTier := functionality.Schema["service_tier"]
+	if got, want := serviceTier.Default, 5; got != want {
+		t.Errorf("service_tier default = %v, want %v", got, want)
+	}
+	for _, value := range []int{0, 5} {
+		_, errors := serviceTier.ValidateFunc(value, "service_tier")
+		if len(errors) != 0 {
+			t.Errorf("service_tier rejected valid value %d: %v", value, errors)
+		}
+	}
+	for _, value := range []int{-1, 6} {
+		_, errors := serviceTier.ValidateFunc(value, "service_tier")
+		if len(errors) == 0 {
+			t.Errorf("service_tier accepted invalid value %d", value)
+		}
+	}
+
+	links, ok := functionality.Schema["links"].Elem.(*schema.Resource)
+	if !ok {
+		t.Fatal("links element is not a nested resource")
+	}
+	for _, field := range []string{"href_url", "icon_url", "name"} {
+		if _, ok := links.Schema[field]; !ok {
+			t.Errorf("links schema does not contain %q", field)
+		}
+	}
 }
 
 func TestAccFunctionalityResource_update(t *testing.T) {
@@ -67,7 +287,11 @@ func TestAccFunctionalityResource_update(t *testing.T) {
 						"firehydrant_functionality.test_functionality", "service_ids.#", "2"),
 					resource.TestCheckResourceAttrSet("firehydrant_functionality.test_functionality", "owner_id"),
 					resource.TestCheckResourceAttr("firehydrant_functionality.test_functionality", "team_ids.#", "2"),
+					resource.TestCheckResourceAttr("firehydrant_functionality.test_functionality", "alert_on_add", "true"),
 					resource.TestCheckResourceAttr("firehydrant_functionality.test_functionality", "auto_add_responding_team", "true"),
+					resource.TestCheckResourceAttr("firehydrant_functionality.test_functionality", "environment_ids.#", "1"),
+					resource.TestCheckResourceAttr("firehydrant_functionality.test_functionality", "links.#", "2"),
+					resource.TestCheckResourceAttr("firehydrant_functionality.test_functionality", "service_tier", "1"),
 				),
 			},
 			{
@@ -190,6 +414,14 @@ func testAccCheckFunctionalityResourceExistsWithAttributes_basic(resourceName st
 			return fmt.Errorf("Unexpected number of service_ids. Expected no service_ids, got: %v", len(functionalityResponse.Services))
 		}
 
+		if len(functionalityResponse.Environments) != 0 {
+			return fmt.Errorf("Unexpected number of environment_ids. Expected no environment_ids, got: %v", len(functionalityResponse.Environments))
+		}
+
+		if len(functionalityResponse.Links) != 0 {
+			return fmt.Errorf("Unexpected number of links. Expected no links, got: %v", len(functionalityResponse.Links))
+		}
+
 		return nil
 	}
 }
@@ -227,6 +459,22 @@ func testAccCheckFunctionalityResourceExistsWithAttributes_update(resourceName s
 		// TODO: Check the service ids
 		if len(functionalityResponse.Services) != 2 {
 			return fmt.Errorf("Unexpected number of service_ids. Expected: 2, got: %v", len(functionalityResponse.Services))
+		}
+
+		if len(functionalityResponse.Environments) != 1 {
+			return fmt.Errorf("Unexpected number of environment_ids. Expected: 1, got: %v", len(functionalityResponse.Environments))
+		}
+
+		if len(functionalityResponse.Links) != 2 {
+			return fmt.Errorf("Unexpected number of links. Expected: 2, got: %v", len(functionalityResponse.Links))
+		}
+
+		if functionalityResponse.AlertOnAdd == nil || !*functionalityResponse.AlertOnAdd {
+			return fmt.Errorf("Unexpected alert_on_add. Expected: true, got: %v", functionalityResponse.AlertOnAdd)
+		}
+
+		if functionalityResponse.ServiceTier == nil || *functionalityResponse.ServiceTier != 1 {
+			return fmt.Errorf("Unexpected service_tier. Expected: 1, got: %v", functionalityResponse.ServiceTier)
 		}
 
 		return nil
@@ -332,9 +580,14 @@ resource "firehydrant_team" "test_team3" {
   name = "test-team3-%s"
 }
 
+resource "firehydrant_environment" "test_environment" {
+  name = "test-environment-%s"
+}
+
 resource "firehydrant_functionality" "test_functionality" {
-  name        = "test-functionality-%s"
-  description = "test-description-%s"
+  name         = "test-functionality-%s"
+  alert_on_add = true
+  description  = "test-description-%s"
   labels = {
     test1 = "test-label1-foo",
   }
@@ -344,13 +597,29 @@ resource "firehydrant_functionality" "test_functionality" {
     firehydrant_service.test_service2.id
   ]
 
+  environment_ids = [
+    firehydrant_environment.test_environment.id
+  ]
+
+  links {
+    href_url = "https://example.com/test-link1-%s"
+    icon_url = "https://example.com/test-icon1-%s"
+    name     = "test-link1-%s"
+  }
+
+  links {
+    href_url = "https://example.com/test-link2-%s"
+    name     = "test-link2-%s"
+  }
+
   owner_id = firehydrant_team.test_team1.id
   team_ids = [
     firehydrant_team.test_team2.id,
     firehydrant_team.test_team3.id
   ]
   auto_add_responding_team = true
-}`, rName, rName, rName, rName, rName, rName, rName)
+  service_tier             = 1
+}`, rName, rName, rName, rName, rName, rName, rName, rName, rName, rName, rName, rName, rName)
 }
 
 func testAccFunctionalityResourceConfig_withoutAutoAddRespondingTeam(rName string) string {
