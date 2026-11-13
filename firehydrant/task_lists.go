@@ -2,10 +2,8 @@ package firehydrant
 
 import (
 	"context"
+	"fmt"
 	"time"
-
-	"github.com/dghubble/sling"
-	"github.com/pkg/errors"
 )
 
 // TaskListsClient is an interface for interacting with task lists on FireHydrant
@@ -22,10 +20,6 @@ type RESTTaskListsClient struct {
 }
 
 var _ TaskListsClient = &RESTTaskListsClient{}
-
-func (c *RESTTaskListsClient) restClient() *sling.Sling {
-	return c.client.client()
-}
 
 // TaskListResponse is the payload for retrieving a task list
 // URL: GET https://api.firehydrant.io/v1/task_lists/{id}
@@ -49,15 +43,9 @@ type TaskListItem struct {
 // Get returns a task list from the FireHydrant API
 func (c *RESTTaskListsClient) Get(ctx context.Context, id string) (*TaskListResponse, error) {
 	taskListResponse := &TaskListResponse{}
-	apiError := &APIError{}
-	response, err := c.restClient().Get("task_lists/"+id).Receive(taskListResponse, apiError)
-	if err != nil {
-		return nil, errors.Wrap(err, "could not get task list")
-	}
 
-	err = checkResponseStatusCode(response, apiError)
-	if err != nil {
-		return nil, err
+	if err := c.client.LegacyGet(ctx, "task_lists/"+id, nil, taskListResponse); err != nil {
+		return nil, fmt.Errorf("could not get task list: %w", err)
 	}
 
 	return taskListResponse, nil
@@ -75,15 +63,8 @@ type CreateTaskListRequest struct {
 // Create creates a brand spankin new task list in FireHydrant
 func (c *RESTTaskListsClient) Create(ctx context.Context, createReq CreateTaskListRequest) (*TaskListResponse, error) {
 	taskListResponse := &TaskListResponse{}
-	apiError := &APIError{}
-	response, err := c.restClient().Post("task_lists").BodyJSON(&createReq).Receive(taskListResponse, apiError)
-	if err != nil {
-		return nil, errors.Wrap(err, "could not create task list")
-	}
-
-	err = checkResponseStatusCode(response, apiError)
-	if err != nil {
-		return nil, err
+	if err := c.client.LegacyPost(ctx, "task_lists", &createReq, taskListResponse); err != nil {
+		return nil, fmt.Errorf("could not create task list: %w", err)
 	}
 
 	return taskListResponse, nil
@@ -101,30 +82,17 @@ type UpdateTaskListRequest struct {
 // Update updates a task list in FireHydrant
 func (c *RESTTaskListsClient) Update(ctx context.Context, id string, updateReq UpdateTaskListRequest) (*TaskListResponse, error) {
 	taskListResponse := &TaskListResponse{}
-	apiError := &APIError{}
-	response, err := c.restClient().Patch("task_lists/"+id).BodyJSON(updateReq).Receive(taskListResponse, apiError)
-	if err != nil {
-		return nil, errors.Wrap(err, "could not update task list")
-	}
-
-	err = checkResponseStatusCode(response, apiError)
-	if err != nil {
-		return nil, err
+	if err := c.client.LegacyPatch(ctx, "task_lists/"+id, updateReq, taskListResponse); err != nil {
+		return nil, fmt.Errorf("could not update task list: %w", err)
 	}
 
 	return taskListResponse, nil
 }
 
 func (c *RESTTaskListsClient) Delete(ctx context.Context, id string) error {
-	apiError := &APIError{}
-	response, err := c.restClient().Delete("task_lists/"+id).Receive(nil, apiError)
+	err := c.client.LegacyDelete(ctx, "task_lists/"+id)
 	if err != nil {
-		return errors.Wrap(err, "could not delete task list")
-	}
-
-	err = checkResponseStatusCode(response, apiError)
-	if err != nil {
-		return err
+		return fmt.Errorf("could not delete task list: %w", err)
 	}
 
 	return nil

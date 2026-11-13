@@ -2,10 +2,8 @@ package firehydrant
 
 import (
 	"context"
+	"fmt"
 	"time"
-
-	"github.com/dghubble/sling"
-	"github.com/pkg/errors"
 )
 
 // RunbookType represents the type of the runbook.
@@ -108,22 +106,12 @@ type RESTRunbooksClient struct {
 
 var _ RunbooksClient = &RESTRunbooksClient{}
 
-func (c *RESTRunbooksClient) restClient() *sling.Sling {
-	return c.client.client()
-}
-
 // Get returns a runbook from the FireHydrant API
 func (c *RESTRunbooksClient) Get(ctx context.Context, id string) (*RunbookResponse, error) {
 	runbookResponse := &RunbookResponse{}
-	apiError := &APIError{}
-	response, err := c.restClient().Get("runbooks/"+id).Receive(runbookResponse, apiError)
-	if err != nil {
-		return nil, errors.Wrap(err, "could not get runbook")
-	}
 
-	err = checkResponseStatusCode(response, apiError)
-	if err != nil {
-		return nil, err
+	if err := c.client.LegacyGet(ctx, fmt.Sprintf("runbooks/%s", id), nil, runbookResponse); err != nil {
+		return nil, fmt.Errorf("could not get runbook: %w", err)
 	}
 
 	return runbookResponse, nil
@@ -135,15 +123,9 @@ func (c *RESTRunbooksClient) Create(ctx context.Context, createReq CreateRunbook
 	createReq.Type = string(RunbookTypeDefault)
 
 	runbookResponse := &RunbookResponse{}
-	apiError := &APIError{}
-	response, err := c.restClient().Post("runbooks").BodyJSON(&createReq).Receive(runbookResponse, apiError)
-	if err != nil {
-		return nil, errors.Wrap(err, "could not create runbook")
-	}
 
-	err = checkResponseStatusCode(response, apiError)
-	if err != nil {
-		return nil, err
+	if err := c.client.LegacyPost(ctx, "runbooks", &createReq, runbookResponse); err != nil {
+		return nil, fmt.Errorf("could not create runbook: %w", err)
 	}
 
 	return runbookResponse, nil
@@ -152,31 +134,18 @@ func (c *RESTRunbooksClient) Create(ctx context.Context, createReq CreateRunbook
 // Update updates a runbook in FireHydrant
 func (c *RESTRunbooksClient) Update(ctx context.Context, id string, updateReq UpdateRunbookRequest) (*RunbookResponse, error) {
 	runbookResponse := &RunbookResponse{}
-	apiError := &APIError{}
-	response, err := c.restClient().Put("runbooks/"+id).BodyJSON(updateReq).Receive(runbookResponse, apiError)
-	if err != nil {
-		return nil, errors.Wrap(err, "could not update runbook")
-	}
 
-	err = checkResponseStatusCode(response, apiError)
-	if err != nil {
-		return nil, err
+	if err := c.client.LegacyPut(ctx, fmt.Sprintf("runbooks/%s", id), updateReq, runbookResponse); err != nil {
+		return nil, fmt.Errorf("could not update runbook: %w", err)
 	}
 
 	return runbookResponse, nil
 }
 
 func (c *RESTRunbooksClient) Delete(ctx context.Context, id string) error {
-	apiError := &APIError{}
-	response, err := c.restClient().Delete("runbooks/"+id).Receive(nil, apiError)
+	err := c.client.LegacyDelete(ctx, fmt.Sprintf("runbooks/%s", id))
 	if err != nil {
-		return errors.Wrap(err, "could not delete runbook")
+		return fmt.Errorf("could not delete runbook: %w", err)
 	}
-
-	err = checkResponseStatusCode(response, apiError)
-	if err != nil {
-		return err
-	}
-
 	return nil
 }

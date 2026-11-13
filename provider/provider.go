@@ -10,11 +10,13 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 )
 
 const (
 	apiKeyName             = "api_key"
 	firehydrantBaseURLName = "firehydrant_base_url"
+	maxRetriesName         = "max_retries"
 )
 
 // Provider returns a terraform provider for the FireHydrant API
@@ -31,6 +33,12 @@ func Provider() *schema.Provider {
 				Type:        schema.TypeString,
 				Optional:    true,
 				DefaultFunc: schema.EnvDefaultFunc("FIREHYDRANT_BASE_URL", "https://api.firehydrant.io/v1/"),
+			},
+			maxRetriesName: {
+				Type:         schema.TypeInt,
+				Optional:     true,
+				Default:      4,
+				ValidateFunc: validation.IntBetween(0, 15),
 			},
 		},
 		ResourcesMap: map[string]*schema.Resource{
@@ -100,13 +108,19 @@ func Provider() *schema.Provider {
 func setupFireHydrantContext(ctx context.Context, rd *schema.ResourceData, terraformVersion string) (interface{}, diag.Diagnostics) {
 	apiKey := rd.Get(apiKeyName).(string)
 	fireHydrantBaseURL := rd.Get(firehydrantBaseURLName).(string)
+	maxRetries := rd.Get(maxRetriesName).(int)
 
 	// Add minimal delay between provider initializations in CI to avoid rate limiting
 	if os.Getenv("TF_ACC") != "" {
 		time.Sleep(500 * time.Millisecond)
 	}
 
-	ac, err := firehydrant.NewRestClient(apiKey, firehydrant.WithBaseURL(fireHydrantBaseURL), firehydrant.WithUserAgentSuffix(fmt.Sprintf("terraform-%s", terraformVersion)))
+	ac, err := firehydrant.NewRestClient(
+		apiKey,
+		firehydrant.WithBaseURL(fireHydrantBaseURL),
+		firehydrant.WithUserAgentSuffix(fmt.Sprintf("terraform-%s", terraformVersion)),
+		firehydrant.WithMaxRetries(maxRetries),
+	)
 	if err != nil {
 		return nil, diag.FromErr(fmt.Errorf("could not initialize API client: %w", err))
 	}

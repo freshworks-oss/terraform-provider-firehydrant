@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/dghubble/sling"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 )
 
@@ -27,14 +26,9 @@ type RESTIngestURLClient struct {
 
 var _ IngestURLClient = &RESTIngestURLClient{}
 
-func (c *RESTIngestURLClient) restClient() *sling.Sling {
-	return c.client.client()
-}
-
 // Get retrieves an ingest URL from FireHydrant.  See below for query params.
 func (c *RESTIngestURLClient) Get(ctx context.Context, params IngestURLParams) (*IngestURLResponse, error) {
 	ingestURL := &IngestURLResponse{}
-	apiError := &APIError{}
 
 	// The query here should be one of:
 	// - nothing (to get the default URL),
@@ -49,14 +43,8 @@ func (c *RESTIngestURLClient) Get(ctx context.Context, params IngestURLParams) (
 		return nil, fmt.Errorf("missing team_id for on_call_schedule_id %s", params.OnCallScheduleID)
 	}
 
-	response, err := c.restClient().Get("signals/ingest_url").QueryStruct(params).Receive(ingestURL, apiError)
-	if err != nil {
+	if err := c.client.LegacyGet(ctx, "signals/ingest_url", params, ingestURL); err != nil {
 		return nil, fmt.Errorf("could not get ingest url: %w", err)
-	}
-
-	err = checkResponseStatusCode(response, apiError)
-	if err != nil {
-		return nil, err
 	}
 
 	if ingestURL.URL == "" {

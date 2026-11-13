@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/bxcodec/faker/v3"
 	"github.com/stretchr/testify/assert"
@@ -125,4 +126,42 @@ func TestClientInitialization(t *testing.T) {
 	if expected := "bobby+dalmatians@firehydrant.io"; expected != actorEmail {
 		t.Fatalf("Expected %s, Got: %s for actor email", expected, actorEmail)
 	}
+}
+
+func TestClient_RateLimiting(t *testing.T) {
+	expectedCallCount := 3
+	callCount := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		statusCode := http.StatusTooManyRequests
+		if callCount++; callCount == expectedCallCount {
+			statusCode = http.StatusOK
+		}
+
+		w.WriteHeader(statusCode)
+	}))
+	defer ts.Close()
+
+	c, err := NewRestClient("123", WithBaseURL(ts.URL))
+	assert.NoError(t, err)
+
+	c.rateLimitedClient.client.RetryWaitMin = time.Millisecond
+	c.rateLimitedClient.client.RetryWaitMax = time.Millisecond
+
+	_, err = c.Ping(t.Context())
+	assert.NoError(t, err)
+	assert.Equal(t, expectedCallCount, callCount)
+}
+
+func TestClient_RateLimitingConnectionError(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	ts.Close()
+
+	c, err := NewRestClient("123", WithBaseURL(ts.URL))
+	assert.NoError(t, err)
+
+	c.rateLimitedClient.client.RetryWaitMin = time.Millisecond
+	c.rateLimitedClient.client.RetryWaitMax = time.Millisecond
+
+	_, err = c.Ping(t.Context())
+	assert.Error(t, err)
 }

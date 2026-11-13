@@ -3,8 +3,6 @@ package firehydrant
 import (
 	"context"
 	"fmt"
-
-	"github.com/dghubble/sling"
 )
 
 type TransposersParams struct {
@@ -26,14 +24,9 @@ type RESTTransposersClient struct {
 
 var _ TransposersClient = &RESTTransposersClient{}
 
-func (c *RESTTransposersClient) restClient() *sling.Sling {
-	return c.client.client()
-}
-
 // Get retrieves an ingest URL from FireHydrant.  See below for query params.
 func (c *RESTTransposersClient) Get(ctx context.Context, params TransposersParams) (*TransposersResponse, error) {
 	transposers := &TransposersResponse{}
-	apiError := &APIError{}
 
 	// The query here should only change the ingrest URL for each transposer.  It should be one of:
 	// - nothing (to get the default URL),
@@ -49,14 +42,8 @@ func (c *RESTTransposersClient) Get(ctx context.Context, params TransposersParam
 		return nil, fmt.Errorf("missing team_id for on_call_schedule_id %s", params.OnCallScheduleID)
 	}
 
-	response, err := c.restClient().Get("signals/transposers").QueryStruct(params).Receive(transposers, apiError)
-	if err != nil {
+	if err := c.client.LegacyGet(ctx, "signals/transposers", params, transposers); err != nil {
 		return nil, fmt.Errorf("could not get transposers: %w", err)
-	}
-
-	err = checkResponseStatusCode(response, apiError)
-	if err != nil {
-		return nil, err
 	}
 
 	if len(transposers.Transposers) == 0 { //len of nil slices is defined as 0

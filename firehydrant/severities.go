@@ -2,8 +2,7 @@ package firehydrant
 
 import (
 	"context"
-	"github.com/dghubble/sling"
-	"github.com/pkg/errors"
+	"fmt"
 )
 
 // SeverityType represents the type of the severity.
@@ -31,10 +30,6 @@ type RESTSeveritiesClient struct {
 
 var _ SeveritiesClient = &RESTSeveritiesClient{}
 
-func (c *RESTSeveritiesClient) restClient() *sling.Sling {
-	return c.client.client()
-}
-
 // SeverityResponse is the payload for a single environment
 // URL: GET https://api.firehydrant.io/v1/severities/{id}
 type SeverityResponse struct {
@@ -46,15 +41,9 @@ type SeverityResponse struct {
 // Get retrieves a severity from FireHydrant
 func (c *RESTSeveritiesClient) Get(ctx context.Context, slug string) (*SeverityResponse, error) {
 	sevResponse := &SeverityResponse{}
-	apiError := &APIError{}
-	response, err := c.restClient().Get("severities/"+slug).Receive(sevResponse, apiError)
-	if err != nil {
-		return nil, errors.Wrap(err, "could not get severity")
-	}
 
-	err = checkResponseStatusCode(response, apiError)
-	if err != nil {
-		return nil, err
+	if err := c.client.LegacyGet(ctx, "severities/"+slug, nil, sevResponse); err != nil {
+		return nil, fmt.Errorf("could not get severity: %w", err)
 	}
 
 	return sevResponse, nil
@@ -71,15 +60,8 @@ type CreateSeverityRequest struct {
 // Create creates a severity
 func (c *RESTSeveritiesClient) Create(ctx context.Context, createReq CreateSeverityRequest) (*SeverityResponse, error) {
 	sevResponse := &SeverityResponse{}
-	apiError := &APIError{}
-	response, err := c.restClient().Post("severities").BodyJSON(&createReq).Receive(sevResponse, apiError)
-	if err != nil {
-		return nil, errors.Wrap(err, "could not create severity")
-	}
-
-	err = checkResponseStatusCode(response, apiError)
-	if err != nil {
-		return nil, err
+	if err := c.client.LegacyPost(ctx, "severities", &createReq, sevResponse); err != nil {
+		return nil, fmt.Errorf("could not create severity: %w", err)
 	}
 
 	return sevResponse, nil
@@ -96,15 +78,8 @@ type UpdateSeverityRequest struct {
 // Update updates a severity in FireHydrant
 func (c *RESTSeveritiesClient) Update(ctx context.Context, slug string, updateReq UpdateSeverityRequest) (*SeverityResponse, error) {
 	sevResponse := &SeverityResponse{}
-	apiError := &APIError{}
-	response, err := c.restClient().Patch("severities/"+slug).BodyJSON(&updateReq).Receive(sevResponse, apiError)
-	if err != nil {
-		return nil, errors.Wrap(err, "could not update severity")
-	}
-
-	err = checkResponseStatusCode(response, apiError)
-	if err != nil {
-		return nil, err
+	if err := c.client.LegacyPatch(ctx, "severities/"+slug, &updateReq, sevResponse); err != nil {
+		return nil, fmt.Errorf("could not update severity: %w", err)
 	}
 
 	return sevResponse, nil
@@ -112,15 +87,9 @@ func (c *RESTSeveritiesClient) Update(ctx context.Context, slug string, updateRe
 
 // Delete deletes a severity from FireHydrant
 func (c *RESTSeveritiesClient) Delete(ctx context.Context, slug string) error {
-	apiError := &APIError{}
-	response, err := c.restClient().Delete("severities/"+slug).Receive(nil, apiError)
+	err := c.client.LegacyDelete(ctx, "severities/"+slug)
 	if err != nil {
-		return errors.Wrap(err, "could not delete severity")
-	}
-
-	err = checkResponseStatusCode(response, apiError)
-	if err != nil {
-		return err
+		return fmt.Errorf("could not delete severity: %w", err)
 	}
 
 	return nil

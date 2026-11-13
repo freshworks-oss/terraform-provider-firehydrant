@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/dghubble/sling"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 )
 
@@ -26,15 +25,10 @@ type RESTSlackChannelsClient struct {
 
 var _ SlackChannelsClient = &RESTSlackChannelsClient{}
 
-func (c *RESTSlackChannelsClient) restClient() *sling.Sling {
-	return c.client.client()
-}
-
 // Get retrieves a Slack channel from FireHydrant using Slack ID. This is useful for looking up
 // a Slack channel's internal ID.
 func (c *RESTSlackChannelsClient) Get(ctx context.Context, params SlackChannelParams) (*SlackChannelResponse, error) {
 	channels := &SlackChannelsResponse{}
-	apiError := &APIError{}
 
 	query := ""
 	if params.ID != "" {
@@ -42,14 +36,9 @@ func (c *RESTSlackChannelsClient) Get(ctx context.Context, params SlackChannelPa
 	} else if params.Name != "" {
 		query = fmt.Sprintf("name=%s", strings.TrimPrefix(params.Name, "#"))
 	}
-	response, err := c.restClient().Get("integrations/slack/channels?"+query).Receive(channels, apiError)
-	if err != nil {
-		return nil, fmt.Errorf("could not get slack channel: %w", err)
-	}
 
-	err = checkResponseStatusCode(response, apiError)
-	if err != nil {
-		return nil, err
+	if err := c.client.LegacyGet(ctx, "integrations/slack/channels?"+query, nil, channels); err != nil {
+		return nil, fmt.Errorf("could not get slack channel: %w", err)
 	}
 
 	if len(channels.Channels) == 0 { //len of nil slices is defined as 0

@@ -4,9 +4,6 @@ import (
 	"context"
 	"fmt"
 	"time"
-
-	"github.com/dghubble/sling"
-	"github.com/pkg/errors"
 )
 
 // RunbooksClient is an interface for interacting with runbooks on FireHydrant
@@ -20,10 +17,6 @@ type RESTRunbookActionsClient struct {
 }
 
 var _ RunbookActionsClient = &RESTRunbookActionsClient{}
-
-func (c *RESTRunbookActionsClient) restClient() *sling.Sling {
-	return c.client.client()
-}
 
 // RunbookActionsResponse is the payload for retrieving runbook actions
 // URL: GET https://api.firehydrant.io/v1/runbooks/actions
@@ -54,16 +47,10 @@ type RunbookActionsQuery struct {
 // Get returns a runbook action from the FireHydrant API
 func (c *RESTRunbookActionsClient) Get(ctx context.Context, runbookType string, integrationSlug string, actionSlug string) (*RunbookAction, error) {
 	runbookActionResponse := &RunbookActionsResponse{}
-	apiError := &APIError{}
 	query := RunbookActionsQuery{Type: runbookType, Items: 100, Lite: true}
-	response, err := c.restClient().Get("runbooks/actions").QueryStruct(query).Receive(runbookActionResponse, apiError)
-	if err != nil {
-		return nil, errors.Wrap(err, "could not get runbook")
-	}
 
-	err = checkResponseStatusCode(response, apiError)
-	if err != nil {
-		return nil, err
+	if err := c.client.LegacyGet(ctx, "runbooks/actions", query, runbookActionResponse); err != nil {
+		return nil, fmt.Errorf("could not get runbook actions: %w", err)
 	}
 
 	for _, action := range runbookActionResponse.Actions {

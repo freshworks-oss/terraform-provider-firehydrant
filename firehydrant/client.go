@@ -9,9 +9,9 @@ import (
 
 	fhsdk "github.com/firehydrant/firehydrant-go-sdk"
 	"github.com/firehydrant/firehydrant-go-sdk/models/components"
+	retryablehttp "github.com/hashicorp/go-retryablehttp"
 
 	"github.com/dghubble/sling"
-	"github.com/pkg/errors"
 )
 
 const (
@@ -41,6 +41,9 @@ type APIClient struct {
 	baseURL         string
 	token           string
 	userAgentSuffix string
+	maxRetries      int
+
+	rateLimitedClient *rateLimitedHTTPClient
 
 	Sdk *fhsdk.FireHydrant
 }
@@ -99,6 +102,13 @@ func WithUserAgentSuffix(suffix string) OptFunc {
 	}
 }
 
+func WithMaxRetries(maxRetries int) OptFunc {
+	return func(c *APIClient) error {
+		c.maxRetries = maxRetries
+		return nil
+	}
+}
+
 // NewRestClient initializes a new API client for FireHydrant
 func NewRestClient(token string, opts ...OptFunc) (*APIClient, error) {
 	firehydrantBaseURL := os.Getenv("FIREHYDRANT_BASE_URL")
@@ -117,17 +127,28 @@ func NewRestClient(token string, opts ...OptFunc) (*APIClient, error) {
 		}
 	}
 
-	//init speakeasy client also
-	httpClient := &http.Client{Transport: &transportWithUserAgent{
-		userAgent: fmt.Sprintf("%s (%s)/%s", UserAgentPrefix, GetBuildInfo().String(), c.userAgentSuffix)},
+	client := retryablehttp.NewClient()
+	client.RetryMax = c.maxRetries
+	client.ErrorHandler = retryablehttp.PassthroughErrorHandler
+	client.HTTPClient.Transport = &transportWithUserAgent{
+		userAgent: fmt.Sprintf("%s (%s)/%s", UserAgentPrefix, GetBuildInfo().String(), c.userAgentSuffix),
 	}
+	client.CheckRetry = func(ctx context.Context, resp *http.Response, err error) (bool, error) {
+		if resp != nil {
+			if resp.StatusCode != http.StatusInternalServerError {
+				return false, nil
+			}
+		}
+		return retryablehttp.DefaultRetryPolicy(ctx, resp, err)
+	}
+	c.rateLimitedClient = newRateLimitedHTTPClient(client)
 
 	// speakeasy sdk will only work with v1 of the api and adds this to each path automatically.  The server URL then assumes no path information
 	// Thus, we need to strip any trailing 'v1/' from the base URL provided to configure the old client.
 	firehydrantServerURL := strings.TrimSuffix(firehydrantBaseURL, "v1/")
 
 	c.Sdk = fhsdk.New(
-		fhsdk.WithClient(httpClient),
+		fhsdk.WithClient(c.rateLimitedClient),
 		fhsdk.WithServerURL(firehydrantServerURL),
 		fhsdk.WithSecurity(components.Security{
 			APIKey: token,
@@ -138,36 +159,74 @@ func NewRestClient(token string, opts ...OptFunc) (*APIClient, error) {
 }
 
 func (c *APIClient) client() *sling.Sling {
-	bi := GetBuildInfo()
-
-	return sling.New().Base(c.baseURL).
-		Set(
-			"User-Agent",
-			fmt.Sprintf(
-				"%s (%s)/%s",
-				UserAgentPrefix,
-				bi.String(),
-				c.userAgentSuffix,
-			),
-		).
+	return sling.New().
+		Doer(c.rateLimitedClient).
+		Base(c.baseURL).
 		Set("Authorization", fmt.Sprintf("Bearer %s", c.token))
 }
 
 // Ping hits and verifies the HTTP of FireHydrant
 func (c *APIClient) Ping(ctx context.Context) (*PingResponse, error) {
 	pingResponse := &PingResponse{}
-	apiError := &APIError{}
-	response, err := c.client().Get("ping").Receive(pingResponse, apiError)
-	if err != nil {
-		return nil, errors.Wrap(err, "could not ping")
-	}
 
-	err = checkResponseStatusCode(response, apiError)
-	if err != nil {
-		return nil, err
+	if err := c.LegacyGet(ctx, "ping", nil, pingResponse); err != nil {
+		return nil, fmt.Errorf("could not ping: %w", err)
 	}
 
 	return pingResponse, nil
+}
+
+func (c *APIClient) LegacyGet(ctx context.Context, path string, queryParams interface{}, success interface{}) error {
+	s := c.client().Get(path)
+	if queryParams != nil {
+		s = s.QueryStruct(queryParams)
+	}
+	return c.legacyDo(ctx, s, success)
+}
+
+func (c *APIClient) LegacyPost(ctx context.Context, path string, params interface{}, success interface{}) error {
+	s := c.client().Post(path)
+	if params != nil {
+		s = s.BodyJSON(params)
+	}
+	return c.legacyDo(ctx, s, success)
+}
+
+func (c *APIClient) LegacyPut(ctx context.Context, path string, params interface{}, success interface{}) error {
+	s := c.client().Put(path)
+	if params != nil {
+		s = s.BodyJSON(params)
+	}
+	return c.legacyDo(ctx, s, success)
+}
+
+func (c *APIClient) LegacyPatch(ctx context.Context, path string, params interface{}, success interface{}) error {
+	s := c.client().Patch(path)
+	if params != nil {
+		s = s.BodyJSON(params)
+	}
+	return c.legacyDo(ctx, s, success)
+}
+
+// LegacyDelete issues a DELETE to path.
+func (c *APIClient) LegacyDelete(ctx context.Context, path string) error {
+	return c.legacyDo(ctx, c.client().Delete(path), nil)
+}
+
+func (c *APIClient) legacyDo(ctx context.Context, s *sling.Sling, success interface{}) error {
+	req, err := s.Request()
+	if err != nil {
+		return fmt.Errorf("unable to create request: %w", err)
+	}
+	req = req.WithContext(ctx)
+
+	apiError := &APIError{}
+	response, err := s.Do(req, success, apiError)
+	if err != nil {
+		return err
+	}
+
+	return checkResponseStatusCode(response, apiError)
 }
 
 // Runbooks returns a RunbooksClient interface for interacting with runbooks in FireHydrant
@@ -217,15 +276,9 @@ func (c *APIClient) StatusUpdateTemplates() StatusUpdateTemplates {
 // GetUsers gets matching users in FireHydrant
 func (c *APIClient) GetUsers(ctx context.Context, params GetUserParams) (*UserResponse, error) {
 	userResponse := &UserResponse{}
-	apiError := &APIError{}
-	response, err := c.client().Get("users").QueryStruct(params).Receive(userResponse, apiError)
-	if err != nil {
-		return nil, errors.Wrap(err, "could not get users")
-	}
 
-	err = checkResponseStatusCode(response, apiError)
-	if err != nil {
-		return nil, err
+	if err := c.LegacyGet(ctx, "users", params, userResponse); err != nil {
+		return nil, fmt.Errorf("could not get users: %w", err)
 	}
 
 	return userResponse, nil

@@ -4,9 +4,6 @@ import (
 	"context"
 	"fmt"
 	"time"
-
-	"github.com/dghubble/sling"
-	"github.com/pkg/errors"
 )
 
 type StatusUpdateTemplates interface {
@@ -41,21 +38,10 @@ type UpdateStatusUpdateTemplateRequest struct {
 	Body string `json:"body"`
 }
 
-func (c *RESTStatusUpdateTemplateClient) restClient() *sling.Sling {
-	return c.client.client()
-}
-
 func (c *RESTStatusUpdateTemplateClient) Create(ctx context.Context, createReq CreateStatusUpdateTemplateRequest) (*StatusUpdateTemplateResponse, error) {
 	statusUpdateTemplateResponse := &StatusUpdateTemplateResponse{}
-	apiError := &APIError{}
-	response, err := c.restClient().Post("status_update_templates").BodyJSON(&createReq).Receive(statusUpdateTemplateResponse, apiError)
-	if err != nil {
-		return nil, errors.Wrap(err, "could not create status update template")
-	}
-
-	err = checkResponseStatusCode(response, apiError)
-	if err != nil {
-		return nil, err
+	if err := c.client.LegacyPost(ctx, "status_update_templates", &createReq, statusUpdateTemplateResponse); err != nil {
+		return nil, fmt.Errorf("could not create status update template: %w", err)
 	}
 
 	return statusUpdateTemplateResponse, nil
@@ -63,15 +49,9 @@ func (c *RESTStatusUpdateTemplateClient) Create(ctx context.Context, createReq C
 
 func (c *RESTStatusUpdateTemplateClient) Get(ctx context.Context, id string) (*StatusUpdateTemplateResponse, error) {
 	statusUpdateTemplateResponse := &StatusUpdateTemplateResponse{}
-	apiError := &APIError{}
-	response, err := c.restClient().Get(fmt.Sprintf("status_update_templates/%s", id)).Receive(statusUpdateTemplateResponse, apiError)
-	if err != nil {
-		return nil, errors.Wrap(err, "could not get status update template")
-	}
 
-	err = checkResponseStatusCode(response, apiError)
-	if err != nil {
-		return nil, err
+	if err := c.client.LegacyGet(ctx, fmt.Sprintf("status_update_templates/%s", id), nil, statusUpdateTemplateResponse); err != nil {
+		return nil, fmt.Errorf("could not get status update template: %w", err)
 	}
 
 	return statusUpdateTemplateResponse, nil
@@ -79,30 +59,17 @@ func (c *RESTStatusUpdateTemplateClient) Get(ctx context.Context, id string) (*S
 
 func (c *RESTStatusUpdateTemplateClient) Update(ctx context.Context, id string, updateReq UpdateStatusUpdateTemplateRequest) (*StatusUpdateTemplateResponse, error) {
 	statusUpdateTemplateResponse := &StatusUpdateTemplateResponse{}
-	apiError := &APIError{}
-	response, err := c.restClient().Patch(fmt.Sprintf("status_update_templates/%s", id)).BodyJSON(&updateReq).Receive(statusUpdateTemplateResponse, apiError)
-	if err != nil {
-		return nil, errors.Wrap(err, "could not update status update template")
-	}
-
-	err = checkResponseStatusCode(response, apiError)
-	if err != nil {
-		return nil, err
+	if err := c.client.LegacyPatch(ctx, fmt.Sprintf("status_update_templates/%s", id), &updateReq, statusUpdateTemplateResponse); err != nil {
+		return nil, fmt.Errorf("could not update status update template: %w", err)
 	}
 
 	return statusUpdateTemplateResponse, nil
 }
 
 func (c *RESTStatusUpdateTemplateClient) Delete(ctx context.Context, id string) error {
-	apiError := &APIError{}
-	response, err := c.restClient().Delete(fmt.Sprintf("status_update_templates/%s", id)).Receive(nil, apiError)
+	err := c.client.LegacyDelete(ctx, fmt.Sprintf("status_update_templates/%s", id))
 	if err != nil {
-		return errors.Wrap(err, "could not delete status update template")
-	}
-
-	err = checkResponseStatusCode(response, apiError)
-	if err != nil {
-		return err
+		return fmt.Errorf("could not delete status update template: %w", err)
 	}
 
 	return nil
