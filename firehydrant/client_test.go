@@ -141,11 +141,11 @@ func TestClient_RateLimiting(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	c, err := NewRestClient("123", WithBaseURL(ts.URL))
+	c, err := NewRestClient("123", WithBaseURL(ts.URL), WithMaxRetries(expectedCallCount))
 	assert.NoError(t, err)
 
-	c.rateLimitedClient.client.RetryWaitMin = time.Millisecond
-	c.rateLimitedClient.client.RetryWaitMax = time.Millisecond
+	c.httpClient.client.RetryWaitMin = time.Millisecond
+	c.httpClient.client.RetryWaitMax = time.Millisecond
 
 	_, err = c.Ping(t.Context())
 	assert.NoError(t, err)
@@ -159,8 +159,8 @@ func TestClient_RateLimitingConnectionError(t *testing.T) {
 	c, err := NewRestClient("123", WithBaseURL(ts.URL))
 	assert.NoError(t, err)
 
-	c.rateLimitedClient.client.RetryWaitMin = time.Millisecond
-	c.rateLimitedClient.client.RetryWaitMax = time.Millisecond
+	c.httpClient.client.RetryWaitMin = time.Millisecond
+	c.httpClient.client.RetryWaitMax = time.Millisecond
 
 	_, err = c.Ping(t.Context())
 	assert.Error(t, err)

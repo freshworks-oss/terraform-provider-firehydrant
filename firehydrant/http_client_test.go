@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	retryablehttp "github.com/hashicorp/go-retryablehttp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/time/rate"
@@ -19,7 +18,7 @@ func blockedLimiter() *rate.Limiter { return rate.NewLimiter(rate.Every(time.Hou
 
 func openLimiter() *rate.Limiter { return rate.NewLimiter(rate.Inf, 0) }
 
-func TestRateLimitedHTTPClient_LimiterSelection(t *testing.T) {
+func TestRateLimitedTransport_LimiterSelection(t *testing.T) {
 	tests := []struct {
 		Name            string
 		Method          string
@@ -79,14 +78,15 @@ func TestRateLimitedHTTPClient_LimiterSelection(t *testing.T) {
 			}))
 			defer ts.Close()
 
-			client := newRateLimitedHTTPClient(retryablehttp.NewClient())
+			transport := &rateLimitedTransport{}
 			if tt.ExpectExpensive {
-				client.commonLimiter = blockedLimiter()
-				client.expensiveLimiter = openLimiter()
+				transport.commonLimiter = blockedLimiter()
+				transport.expensiveLimiter = openLimiter()
 			} else {
-				client.commonLimiter = openLimiter()
-				client.expensiveLimiter = blockedLimiter()
+				transport.commonLimiter = openLimiter()
+				transport.expensiveLimiter = blockedLimiter()
 			}
+			client := &http.Client{Transport: transport}
 
 			req, err := http.NewRequestWithContext(context.Background(), tt.Method, fmt.Sprintf("%s%s", ts.URL, tt.Path), nil)
 			require.NoError(t, err)
@@ -102,7 +102,9 @@ func TestRateLimitedHTTPClient_LimiterSelection(t *testing.T) {
 	}
 }
 
-func TestRateLimitedHTTPClient_ThrottlesRequests(t *testing.T) {
+func slowLimiter(burst int) *rate.Limiter { return rate.NewLimiter(rate.Every(time.Hour), burst) }
+
+func TestRateLimitedTransport_BlocksWhenBudgetExhausted(t *testing.T) {
 	var hits atomic.Int32
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits.Add(1)
@@ -110,20 +112,62 @@ func TestRateLimitedHTTPClient_ThrottlesRequests(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	const interval = 50 * time.Millisecond
-	client := newRateLimitedHTTPClient(retryablehttp.NewClient())
-	client.commonLimiter = rate.NewLimiter(rate.Every(interval), 1)
+	client := &http.Client{Transport: &rateLimitedTransport{
+		commonLimiter:    slowLimiter(2),
+		expensiveLimiter: openLimiter(),
+	}}
 
-	start := time.Now()
-	for i := 0; i < 4; i++ {
-		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, fmt.Sprintf("%s/v1/flux-capacitors", ts.URL), nil)
+	get := func(ctx context.Context) error {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("%s/v1/flux-capacitors", ts.URL), nil)
 		require.NoError(t, err)
 
 		resp, err := client.Do(req)
-		require.NoError(t, err)
-		resp.Body.Close()
+		if resp != nil {
+			resp.Body.Close()
+		}
+		return err
 	}
 
-	assert.GreaterOrEqual(t, time.Since(start), 3*interval-10*time.Millisecond)
-	assert.EqualValues(t, 4, hits.Load())
+	require.NoError(t, get(context.Background()))
+	require.NoError(t, get(context.Background()))
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+	defer cancel()
+	err := get(ctx)
+
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "error waiting for client rate limiter")
+	assert.EqualValues(t, 2, hits.Load())
+}
+
+func TestHTTPClient_RetriesAreRateLimited(t *testing.T) {
+	const maxRetries = 3
+
+	var hits atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer ts.Close()
+
+	limiter := slowLimiter(maxRetries + 1)
+
+	client := newHttpClient(maxRetries, "test-agent")
+	client.client.RetryWaitMin = time.Millisecond
+	client.client.RetryWaitMax = time.Millisecond
+	client.client.HTTPClient.Transport = &rateLimitedTransport{
+		userAgent:        "test-agent",
+		commonLimiter:    limiter,
+		expensiveLimiter: openLimiter(),
+	}
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, fmt.Sprintf("%s/v1/flux-capacitors", ts.URL), nil)
+	require.NoError(t, err)
+
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+	resp.Body.Close()
+
+	assert.EqualValues(t, maxRetries+1, hits.Load())
+	assert.False(t, limiter.Allow())
 }

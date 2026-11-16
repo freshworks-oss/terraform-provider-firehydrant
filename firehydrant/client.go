@@ -9,7 +9,6 @@ import (
 
 	fhsdk "github.com/firehydrant/firehydrant-go-sdk"
 	"github.com/firehydrant/firehydrant-go-sdk/models/components"
-	retryablehttp "github.com/hashicorp/go-retryablehttp"
 
 	"github.com/dghubble/sling"
 )
@@ -43,9 +42,8 @@ type APIClient struct {
 	userAgentSuffix string
 	maxRetries      int
 
-	rateLimitedClient *rateLimitedHTTPClient
-
-	Sdk *fhsdk.FireHydrant
+	httpClient *httpClient
+	Sdk        *fhsdk.FireHydrant
 }
 
 const (
@@ -73,15 +71,6 @@ type Client interface {
 	// Signals
 	IngestURL() IngestURLClient
 	Transposers() TransposersClient
-}
-
-type transportWithUserAgent struct {
-	userAgent string
-}
-
-func (t *transportWithUserAgent) RoundTrip(req *http.Request) (*http.Response, error) {
-	req.Header.Set("User-Agent", t.userAgent)
-	return http.DefaultTransport.RoundTrip(req)
 }
 
 // OptFunc is a function that sets a setting on a client
@@ -127,28 +116,15 @@ func NewRestClient(token string, opts ...OptFunc) (*APIClient, error) {
 		}
 	}
 
-	client := retryablehttp.NewClient()
-	client.RetryMax = c.maxRetries
-	client.ErrorHandler = retryablehttp.PassthroughErrorHandler
-	client.HTTPClient.Transport = &transportWithUserAgent{
-		userAgent: fmt.Sprintf("%s (%s)/%s", UserAgentPrefix, GetBuildInfo().String(), c.userAgentSuffix),
-	}
-	client.CheckRetry = func(ctx context.Context, resp *http.Response, err error) (bool, error) {
-		if resp != nil {
-			if resp.StatusCode != http.StatusInternalServerError {
-				return false, nil
-			}
-		}
-		return retryablehttp.DefaultRetryPolicy(ctx, resp, err)
-	}
-	c.rateLimitedClient = newRateLimitedHTTPClient(client)
+	client := newHttpClient(c.maxRetries, fmt.Sprintf("%s (%s)/%s", UserAgentPrefix, GetBuildInfo().String(), c.userAgentSuffix))
+	c.httpClient = client
 
 	// speakeasy sdk will only work with v1 of the api and adds this to each path automatically.  The server URL then assumes no path information
 	// Thus, we need to strip any trailing 'v1/' from the base URL provided to configure the old client.
 	firehydrantServerURL := strings.TrimSuffix(firehydrantBaseURL, "v1/")
 
 	c.Sdk = fhsdk.New(
-		fhsdk.WithClient(c.rateLimitedClient),
+		fhsdk.WithClient(c.httpClient),
 		fhsdk.WithServerURL(firehydrantServerURL),
 		fhsdk.WithSecurity(components.Security{
 			APIKey: token,
@@ -160,7 +136,7 @@ func NewRestClient(token string, opts ...OptFunc) (*APIClient, error) {
 
 func (c *APIClient) client() *sling.Sling {
 	return sling.New().
-		Doer(c.rateLimitedClient).
+		Doer(c.httpClient).
 		Base(c.baseURL).
 		Set("Authorization", fmt.Sprintf("Bearer %s", c.token))
 }
